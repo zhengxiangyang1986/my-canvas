@@ -343,13 +343,13 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
       <Handle
         type="target"
         position={Position.Left}
-        style={{ background: handleColor, border: 'none', width: 10, height: 10 }}
+        className="!bg-sky-300 !border-0"
       />
-      {/* 输出 Handle — 固定在整体右侧（含右侧面板时在面板右缘） */}
+      {/* 输出 Handle — 固定在整体右侧 */}
       <Handle
         type="source"
         position={Position.Right}
-        style={{ background: handleColor, border: 'none', width: 10, height: 10 }}
+        className="!bg-sky-300 !border-0"
       />
     {/* 主体 */}
     <div
@@ -357,7 +357,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
       className={`relative rounded-xl border-2 transition-all w-[320px] ${
         selected ? 'border-emerald-400 shadow-2xl shadow-emerald-500/20' : 'border-white/15 hover:border-white/30'
       }`}
-      style={{ background: 'rgba(20,20,22,.92)', backdropFilter: 'blur(8px)' }}
+      style={{ background: 'rgba(20,20,22,.92)' }}
     >
 
       {/* Header */}
@@ -595,7 +595,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
         className={`llm-chat-panel w-[260px] rounded-xl border-2 overflow-y-auto pl-2.5 pt-2.5 pb-2.5 pr-0 space-y-1.5 ${
           selected ? 'border-emerald-400/60' : 'border-white/10'
         }`}
-        style={{ background: 'rgba(20,20,22,.94)', backdropFilter: 'blur(8px)', height: mainH ? `${mainH}px` : undefined }}
+        style={{ background: 'rgba(20,20,22,.94)', height: mainH ? `${mainH}px` : undefined }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {history.map((t, i) => (
@@ -611,8 +611,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
                 onChange={(e) => setEditText(e.target.value)}
                 onBlur={handleEditBlur}
                 onKeyDown={handleEditKeyDown}
-                className="w-full resize-none rounded bg-white/10 border border-emerald-400/50 px-2 py-1.5 text-[11px] text-white outline-none focus:border-emerald-400"
-                style={{ height: mainH ? `${mainH}px` : '200px' }}
+                className="w-full h-full min-h-[100px] resize-none rounded bg-white/10 border border-emerald-400/50 px-2 py-1.5 text-[11px] text-white outline-none focus:border-emerald-400 overflow-y-auto"
               />
             ) : (
               <div
