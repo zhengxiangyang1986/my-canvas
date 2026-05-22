@@ -569,24 +569,30 @@ html[data-theme-style="pixel"] .px-modal-mask {
 }
 
 /* 滚动条 */
-html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar { width: 2px; height: 2px; }
-html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-track { background: transparent; }
-html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-thumb {
-  background: var(--px-ink-dim);
-  border-radius: 9999px;
+html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar,
+html[data-theme-style="pixel"] .react-flow__node *::-webkit-scrollbar { width: 2px !important; height: 2px !important; }
+html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-track,
+html[data-theme-style="pixel"] .react-flow__node *::-webkit-scrollbar-track { background: transparent !important; }
+html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-thumb,
+html[data-theme-style="pixel"] .react-flow__node *::-webkit-scrollbar-thumb {
+  background: var(--px-ink-dim) !important;
+  border-radius: 9999px !important;
 }
-html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-thumb:hover {
-  background: var(--px-ink);
+html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-thumb:hover,
+html[data-theme-style="pixel"] .react-flow__node *::-webkit-scrollbar-thumb:hover {
+  background: var(--px-ink) !important;
 }
-html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-button { display: none; }
-html[data-theme-style="pixel"] .react-flow__node {
+html[data-theme-style="pixel"] .react-flow__node ::-webkit-scrollbar-button,
+html[data-theme-style="pixel"] .react-flow__node *::-webkit-scrollbar-button { display: none !important; width: 0 !important; height: 0 !important; }
+html[data-theme-style="pixel"] .react-flow__node,
+html[data-theme-style="pixel"] .react-flow__node * {
   scrollbar-width: thin;
   scrollbar-color: var(--px-ink-dim) transparent;
 }
-html[data-theme-style="pixel"] .px-scroll::-webkit-scrollbar { width: 2px; height: 2px; }
+html[data-theme-style="pixel"] .px-scroll::-webkit-scrollbar { width: 2px !important; height: 2px !important; }
 html[data-theme-style="pixel"] .px-scroll::-webkit-scrollbar-thumb {
-  background: var(--px-ink-dim);
-  border-radius: 9999px;
+  background: var(--px-ink-dim) !important;
+  border-radius: 9999px !important;
 }
 
 /* 标题块 */

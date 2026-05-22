@@ -42,24 +42,32 @@ body,
 }
 
 /* 极细无感滚动条(科技风) */
-.react-flow__node ::-webkit-scrollbar {
-  width: 2px;
-  height: 2px;
+.react-flow__node ::-webkit-scrollbar,
+.react-flow__node *::-webkit-scrollbar {
+  width: 2px !important;
+  height: 2px !important;
 }
-.react-flow__node ::-webkit-scrollbar-track {
-  background: transparent;
+.react-flow__node ::-webkit-scrollbar-track,
+.react-flow__node *::-webkit-scrollbar-track {
+  background: transparent !important;
 }
-.react-flow__node ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-  border-radius: 9999px;
+.react-flow__node ::-webkit-scrollbar-thumb,
+.react-flow__node *::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.15) !important;
+  border-radius: 9999px !important;
 }
-.react-flow__node ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.3);
+.react-flow__node ::-webkit-scrollbar-thumb:hover,
+.react-flow__node *::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.3) !important;
 }
-.react-flow__node ::-webkit-scrollbar-button {
-  display: none;
+.react-flow__node ::-webkit-scrollbar-button,
+.react-flow__node *::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
-.react-flow__node {
+.react-flow__node,
+.react-flow__node * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
