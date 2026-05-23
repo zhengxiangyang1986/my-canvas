@@ -199,4 +199,4 @@ npm run preview       # 本地预览构建产物
 
 ## 🐧 Credits
 
-T8 企鹅画布 · 由 PenguinPravite 重构而来。
+T8 企鹅画布 · 部分代码参考PenguinPravite以及infinite canvas以及zhenzhen-web项目。
