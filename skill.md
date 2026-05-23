@@ -3734,3 +3734,343 @@ function applyClassifiedKey(settings, hint) {
 
 ---
 
+## 42. RunningHub AI 应用全自动 nodeList + 媒体输入输出全链路规范（v1.5.9 ~ v1.5.10）
+
+> **本章是其他 Agent / 项目接入 RunningHub AI 应用 (apiCallDemo / ai-app/run / task/openapi/outputs) 的可复用规范。**
+>
+> 解决五大经典坑：①填了上游 url RH 还是用应用默认参数；②IMAGE 字段渲染破图；③同一 webappId 多次提交结果不一致；④多产物 (mp4/png) 塞进同一个 OutputNode；⑤d.urls 含 mp4 被当 image 分类导致下游 0 项。
+
+### 42.1 RunningHub apiCallDemo nodeInfoList Schema
+
+通过 `GET /api/proxy/runninghub/app-info?webappId=XXX` 拉到的 `nodeInfoList` 每条 item：
+
+```ts
+type RhAppInfoItem = {
+  nodeId: string;          // 工作流内部节点 id（如 "9" / "42"）
+  nodeName: string;        // 节点显示名（如 "file"、"prompt"）
+  fieldName: string;       // 字段名（如 "file"、"text"、"value"、"select"）
+  fieldType: 'IMAGE' | 'VIDEO' | 'AUDIO'
+           | 'STRING' | 'TEXT'
+           | 'NUMBER' | 'FLOAT' | 'INTEGER'
+           | 'LIST' | 'SELECT' | string;
+  fieldValue: any;         // 应用提供的默认值（IMAGE/VIDEO/AUDIO 时是 RH 内部 fileName，类似 hash）
+  description?: string;    // 字段中文说明
+  fieldData?: any;         // SELECT/LIST 时为可选项数组
+};
+```
+
+**关键认知**：`fieldValue` 中的 IMAGE/VIDEO/AUDIO 默认值不是 url，而是 RH 平台预上传后的内部 fileName（形如 `87841334...png` / `api/xxx.mp4`），形态会迷惑路径白名单/扩展名判断。
+
+### 42.2 fieldType → 内部 valueType 推断
+
+```ts
+export type ValueType = 'image' | 'video' | 'audio' | 'text' | 'number' | 'select';
+
+function inferValueType(ft?: string): ValueType {
+  const u = String(ft || '').toUpperCase();
+  if (u === 'IMAGE') return 'image';
+  if (u === 'VIDEO') return 'video';
+  if (u === 'AUDIO') return 'audio';
+  if (u === 'NUMBER' || u === 'FLOAT' || u === 'INTEGER') return 'number';
+  if (u === 'LIST' || u === 'SELECT') return 'select';
+  return 'text'; // STRING/TEXT/未知 一律 text
+}
+```
+
+### 42.3 后端代理三接口（routes/proxy.js）
+
+| 路由 | 上游 | 用途 |
+|------|------|------|
+| `GET /api/proxy/runninghub/app-info?webappId` | `/api/webapp/apiCallDemo` | 拉应用默认 nodeInfoList |
+| `POST /api/proxy/runninghub/submit` | `/task/openapi/ai-app/run` | 提交任务，body `{webappId, nodeInfoList, instanceType?}` 返回 `{taskId}` |
+| `GET /api/proxy/runninghub/query?taskId` | `/task/openapi/outputs` | 轮询 code 0/804/813/805 → SUCCESS/RUNNING/QUEUED/FAILED |
+| `POST /api/proxy/runninghub/upload-asset` | `/task/openapi/upload` | 把 url/本地文件转 RH 内部 fileName |
+
+#### 42.3.1 /upload-asset 路径白名单（极重要）
+
+后端必须接受**多种本地路径前缀**：
+
+```js
+const INPUT_PREFIXES = ['/files/output/', '/output/', '/files/input/', '/input/'];
+function localPathFromUrl(u) {
+  for (const p of INPUT_PREFIXES) {
+    if (u.startsWith(p)) {
+      const rel = u.slice(p.length);
+      const isInput = p.includes('input');
+      return path.join(isInput ? config.INPUT_DIR : config.OUTPUT_DIR, rel);
+    }
+  }
+  return null;
+}
+```
+
+关键：上传节点 (`UploadFileNode`) 产出的 url 是 `/files/input/up_xxx.mp4`，必须能解析到 `INPUT_DIR`；图像/视频生成节点产出 `/files/output/...`，解析到 `OUTPUT_DIR`。
+
+#### 42.3.2 /submit body 必须严格按 RH schema
+
+```js
+const body = { webappId, nodeInfoList };
+if (instanceType) body.instanceType = instanceType; // 不传或 '' → RH 用默认实例
+```
+
+`nodeInfoList` 每条只能含 `{nodeId, fieldName, fieldValue}`，**禁止**带 valueType / nodeName / description / fieldType 等冗余字段，否则 RH 会 400。
+
+### 42.4 前端 paramValues 三态规范
+
+节点 data 中存：
+
+```ts
+type ParamValue = {
+  value: string;                  // 当前值：可能是 url / RH fileName / 用户手填 / 空
+  sourceFromUpstream?: boolean;   // 三态语义：
+                                  //   true      → 已勾选「从上游自动获取」；同步 useEffect 持续跟进上游 url
+                                  //   undefined → 从未交互过；一旦上游出现对应媒体自动启用
+                                  //   false     → 用户主动取消；尊重用户手填值，computeFreshValuesNow 跳过
+};
+paramValues: Record<string, ParamValue>; // key = `${nodeId}__${fieldName}`
+```
+
+**默认勾选策略**（v1.5.10）：搜索 webappId 拉到 nodeInfoList 后，所有 IMAGE/VIDEO/AUDIO 字段**默认 sourceFromUpstream=true**，即使上游暂未连接也勾上、value=''，等上游连入后由 useEffect 自动填值。这样消除了「上游已连但 hash 默认值仍占用 fieldValue」的歧义。
+
+### 42.5 三层防御：确保上游 url 一定到达 RH
+
+#### 42.5.1 第一层：useEffect 三态同步
+
+```ts
+useEffect(() => {
+  const list = appInfo?.nodeInfoList; if (!Array.isArray(list)) return;
+  let changed = false; const next = { ...paramValues };
+  for (const it of list) {
+    const vt = inferValueType(it?.fieldType);
+    if (vt !== 'image' && vt !== 'video' && vt !== 'audio') continue;
+    const k = paramKey(it.nodeId, it.fieldName);
+    const cur = next[k]; const upUrl = findUpstreamUrl(vt);
+    if (!upUrl) continue;
+    if (cur?.sourceFromUpstream === false) continue;          // 用户取消
+    if (cur?.sourceFromUpstream === true) {
+      if (upUrl !== cur.value) { next[k] = { ...cur, value: upUrl }; changed = true; }
+    } else {                                                  // undefined → 自动启用
+      next[k] = { value: upUrl, sourceFromUpstream: true }; changed = true;
+    }
+  }
+  if (changed) update({ paramValues: next });
+}, [upstreamNodes, appInfo]);
+```
+
+#### 42.5.2 第二层：computeFreshValuesNow 同步快照（避开 React state 异步陷阱）
+
+```ts
+// 用户连了上游视频 → setState 异步 → 立即点运行时 paramValues 还是旧值。
+// 必须用纯函数同步算出快照，绕过 state。
+const computeFreshValuesNow = (list?: any[]): Record<string, ParamValue> => {
+  const next = { ...paramValues };
+  if (!Array.isArray(list)) return next;
+  for (const it of list) {
+    const vt = inferValueType(it?.fieldType);
+    if (vt !== 'image' && vt !== 'video' && vt !== 'audio') continue;
+    const k = paramKey(it.nodeId, it.fieldName);
+    if (next[k]?.sourceFromUpstream === false) continue;
+    const upUrl = findUpstreamUrl(vt); if (!upUrl) continue;
+    next[k] = { value: upUrl, sourceFromUpstream: true };
+  }
+  return next;
+};
+
+const handleRun = async () => {
+  let freshList = appInfo?.nodeInfoList;
+  if (!freshList?.length && hasUpstreamMedia()) {
+    const r = await handleFetchInfo(); if (r) freshList = r.list;
+  }
+  const effectiveValues = computeFreshValuesNow(freshList);
+  update({ paramValues: effectiveValues });
+  const rawList = buildRawNodeInfoList(freshList, effectiveValues);   // 必须传函数参数，不能从 state 读
+  const nodeInfoList = await resolveNodeInfoList(rawList);
+  await submitRh({ webappId, nodeInfoList, instanceType: instanceType || undefined });
+};
+```
+
+#### 42.5.3 第三层：resolveNodeInfoList 提交前最终兜底
+
+```ts
+for (const it of raw) {
+  let v = String(it.fieldValue || '').trim();
+  if (it.valueType === 'image' || it.valueType === 'video' || it.valueType === 'audio') {
+    const isUrlLike0 = /^https?:\/\//i.test(v) || v.startsWith('/files/');
+    // 当前值不是 url（可能是 RH 默认 hash）+ 上游有对应媒体 + 用户没主动关闭 → 强制覆盖
+    if (!isUrlLike0) {
+      const cur = paramValues[paramKey(it.nodeId, it.fieldName)];
+      if (cur?.sourceFromUpstream !== false) {
+        const upUrl = findUpstreamUrl(it.valueType);
+        if (upUrl) v = upUrl;
+      }
+    }
+    if (!v) continue;
+    // url-like → /upload-asset 转 fileName；否则原样作为 RH 内部 fileName
+    const isUrlLike = /^https?:\/\//i.test(v) || v.startsWith('/files/');
+    out.push({
+      nodeId: it.nodeId,
+      fieldName: it.fieldName,
+      fieldValue: isUrlLike ? (await uploadRhAsset(v)).fileName : v,
+    });
+  }
+}
+```
+
+### 42.6 输出端 SUCCESS 分流
+
+RH 返回 `urls` 是任意类型的混合数组，**必须按扩展名分到 imageUrl/videoUrl/audioUrl**，避免 mp4 被填到 imageUrl 让 OutputNode 当图片渲染：
+
+```ts
+if (r.status === 'SUCCESS') {
+  const list: string[] = Array.isArray(r.urls) ? r.urls : [];
+  const isImg = (u: string) => /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(u);
+  const isVid = (u: string) => /\.(mp4|webm|mov|m4v|mkv)$/i.test(u);
+  const isAud = (u: string) => /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(u);
+  const firstImg = list.find(isImg); const firstVid = list.find(isVid); const firstAud = list.find(isAud);
+  const patch: any = { status: 'success', urls: list };
+  if (firstImg) patch.imageUrl = firstImg;
+  if (firstVid) patch.videoUrl = firstVid;
+  if (firstAud) patch.audioUrl = firstAud;
+  if (list.length > 1) patch.imageUrls = list.filter(isImg); // 多图
+  update(patch);
+}
+```
+
+### 42.7 Canvas autoOutput 多产物分流（极重要）
+
+[Canvas.tsx](file:///e:/PenguinPravite/T8-penguin-canvas/src/components/Canvas.tsx) 自动外挂 OutputNode 时**必须按扩展名把 d.urls 分到 imgs/vids/auds**：
+
+```ts
+// ❌ 错误：把 mp4 当 image
+if (Array.isArray(d.urls)) d.urls.forEach(pushImg);
+
+// ✅ 正确：按扩展分流
+if (Array.isArray(d.urls)) {
+  const isVidExt = (u: string) => /\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i.test(u);
+  const isAudExt = (u: string) => /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i.test(u);
+  d.urls.forEach((u: any) => {
+    if (typeof u !== 'string' || !u) return;
+    if (isVidExt(u)) pushVid(u);
+    else if (isAudExt(u)) pushAud(u);
+    else pushImg(u);
+  });
+}
+```
+
+**为什么必须分流**：autoOutput 创建 OutputNode 时会按 items 分配 `pickKind+pickIndex`，若 mp4 被推入 imgs，则 pickKind='image' → OutputNode 渲染时强制清空 videos → 又因兜底已把 mp4 从 images 移到 videos → **0 项空白**。这就是「视频一删掉 OutputNode 就在 RH 节点内显示」的真凶。
+
+### 42.8 多产物 → N 个 OutputNode 升级 + 补建策略
+
+RH 一次任务可能产出多张图 / 多个视频。autoOutput 策略：
+
+```ts
+// 1. 收集本节点所有下游 OutputNode（手动 + 自动）
+// 2. 已带 pickKind+pickIndex 的 → 计入 occupied 集合
+// 3. 未带 pickKind 且仅本节点单一连接的 → 升级 data 为 pickKind+pickIndex（按 items 顺序分配下一个未占用项）
+// 4. 多上游聚合节点 (totalIncoming > 1) → 不动 data，避免破坏拓扑
+// 5. 升级后仍未占用的 items → 补建 auto OutputNode（每行 3 个、列宽 350、行高 360）
+```
+
+效果：用户先手动连 1 个 OutputNode + RH 跑 2 张 → 手动那个升级显示第 1 张，autoOutput 补建第 2 张；与 ImageNode/VideoNode 等其他生成节点对齐。
+
+### 42.9 IMAGE 字段预览渲染白名单
+
+搜索 webappId 后，IMAGE 字段的 fieldValue 是 RH 内部 hash（形如 `api/xxx.png`），扩展名命中但不是 url → 渲染破图。修复：
+
+```tsx
+{vt === 'image' && (() => {
+  const v = cur.value || '';
+  const isHttpUrl = /^https?:\/\//i.test(v);
+  const isLocalUrl = v.startsWith('/files/output/') || v.startsWith('/output/')
+                  || v.startsWith('/files/input/')  || v.startsWith('/input/');
+  const isImgExt = /\.(png|jpe?g|webp|gif|bmp|avif)(\?.*)?$/i.test(v);
+  if (!(isHttpUrl || isLocalUrl) || !isImgExt) return null;
+  return <img src={v} onError={(e) => (e.currentTarget.style.display = 'none')} />;
+})()}
+```
+
+### 42.10 instanceType 字段规范
+
+| UI 选项 | 实际值 | 提交行为 |
+|---------|--------|----------|
+| 默认 | `''` | submit body **不带** instanceType 字段，走 RH 应用默认实例 |
+| plus | `'plus'` | 显式提交 plus 实例 |
+
+UI 形态：`<select>` 不允许自由输入，避免拼写错误。
+
+### 42.11 OutputNode 上游订阅刷新（xyflow 引用稳定陷阱）
+
+xyflow `useNodesData` 返回的对象引用可能在 data 仅修改字段时仍稳定，导致 `useMemo([upstreamNodes])` 不重算。修复：增加细粒度字符串签名 deps：
+
+```ts
+const upstreamSig = useMemo(() => {
+  return upstreamNodes.map(n => {
+    const ud = n?.data || {};
+    return [
+      n?.id, ud.outputText, ud.reply, ud.prompt, ud.text,
+      ud.imageUrl, ud.videoUrl, ud.audioUrl,
+      Array.isArray(ud.imageUrls) ? ud.imageUrls.join(',') : '',
+      Array.isArray(ud.urls) ? ud.urls.join(',') : '',
+      Array.isArray(ud.generatedImages) ? ud.generatedImages.join(',') : '',
+    ].join('§');
+  }).join('|');
+}, [upstreamNodes]);
+
+const collected = useMemo(() => { /* ... */ },
+  [upstreamNodes, upstreamSig, d.pickKind, d.pickIndex, /* directXxx */]);
+```
+
+### 42.12 完整调试日志规范
+
+所有 RH 节点关键节点必须打 console，方便用户 F12 自查：
+
+```ts
+console.log('[RH/submit] webappId=', webappId, 'nodeInfoList=', JSON.parse(JSON.stringify(nodeInfoList)));
+console.log('[RH/submit] taskId=', r.taskId);
+console.error('[RH/submit] error:', e);
+console.log('[RH/poll] taskId=', tid, 'status=', r.status, 'code=', r.code, 'urls=', r.urls?.length || 0);
+console.log('[RH/done] taskId=', tid, 'urls=', list);
+console.log('[RH/resolve] override field', fieldName, 'from', v, '→ upstream', upUrl);  // 兜底覆盖时
+```
+
+### 42.13 RH 节点接入新项目 Checklist
+
+复用本规范到其他工程时，按下面顺序逐项核对：
+
+- [ ] 后端 `/upload-asset` 路由支持 `/files/output/`、`/files/input/`、`/output/`、`/input/` 四种前缀
+- [ ] 后端 `/submit` body 严格 `{webappId, nodeInfoList[, instanceType]}`，nodeInfoList item 仅含 `{nodeId, fieldName, fieldValue}`
+- [ ] 前端 fieldType 推断 `inferValueType` 覆盖 IMAGE/VIDEO/AUDIO/STRING/TEXT/NUMBER/FLOAT/INTEGER/LIST/SELECT
+- [ ] 拉 nodeInfoList 后媒体字段默认 `sourceFromUpstream=true`（即使上游未连）
+- [ ] useEffect 三态同步（true/undefined/false 各自语义）
+- [ ] handleRun 用 `computeFreshValuesNow` 同步快照绕开 state 异步
+- [ ] resolveNodeInfoList 含三层兜底：`!isUrl + sourceFromUpstream !== false + 上游有 url → 强制覆盖`
+- [ ] SUCCESS 分支按扩展名分流到 imageUrl/videoUrl/audioUrl/imageUrls
+- [ ] Canvas autoOutput 把 `d.urls` 按扩展分流到 imgs/vids/auds
+- [ ] OutputNode 加 `upstreamSig` 字符串签名 deps
+- [ ] IMAGE 预览加 url 前缀白名单 + onError 兜底
+- [ ] instanceType 用 `<select>` 限定 [`''=默认`, `'plus'`]
+- [ ] 关键节点全打 `[RH/submit] [RH/poll] [RH/done] [RH/resolve]` 日志
+
+### 42.14 关键文件
+
+- [src/components/nodes/RunningHubNode.tsx](file:///e:/PenguinPravite/T8-penguin-canvas/src/components/nodes/RunningHubNode.tsx)——节点核心：三态、computeFreshValuesNow、resolveNodeInfoList 三层兜底、IMAGE 白名单、SUCCESS 分流
+- [src/components/nodes/OutputNode.tsx](file:///e:/PenguinPravite/T8-penguin-canvas/src/components/nodes/OutputNode.tsx)——upstreamSig 签名 deps
+- [src/components/Canvas.tsx](file:///e:/PenguinPravite/T8-penguin-canvas/src/components/Canvas.tsx)——autoOutput d.urls 分流 + 升级/补建策略
+- [src/services/generation.ts](file:///e:/PenguinPravite/T8-penguin-canvas/src/services/generation.ts)——`fetchRhAppInfo` / `submitRh` / `queryRh` / `uploadRhAsset` 封装
+- [backend/src/routes/proxy.js](file:///e:/PenguinPravite/T8-penguin-canvas/backend/src/routes/proxy.js)——四个 RH 代理路由
+
+### 42.15 修复时间线（提交链）
+
+| commit | 修复点 |
+|--------|--------|
+| `38316f2` | useEffect 三态同步 + OutputNode upstreamSig |
+| `316b7a5` | IMAGE 预览 url 前缀白名单 + onError 兜底 |
+| `e3e190b` | computeFreshValuesNow 同步快照绕 state 异步陷阱 |
+| `c5a0ec1` | autoOutput 升级 + 补建策略（多产物分多 OutputNode） |
+| `caae35f` | autoOutput d.urls 按扩展分流到 imgs/vids/auds |
+| `7e76785` | 媒体字段拉取后默认勾选「从上游自动获取」 |
+| `bfb4f95` | instanceType 改为下拉列表 [默认/plus] |
+| `8e866c4` | resolveNodeInfoList 第三层最终兜底 |
+
+---
+
