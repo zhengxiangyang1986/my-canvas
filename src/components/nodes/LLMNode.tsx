@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState, useLayoutEffect } from 'react';
+import { memo, useCallback, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import {
   AlertCircle,
@@ -26,7 +26,10 @@ import { logBus } from '../../stores/logs';
 import { PORT_COLOR } from '../../config/portTypes';
 import { useDragMaterialStore, type MaterialPayload } from '../../stores/dragMaterial';
 import { useMaterialDropTarget } from '../../hooks/useMaterialDropTarget';
-import { useUpstreamMaterials } from './useUpstreamMaterials';
+import { useUpstreamMaterials, type Material } from './useUpstreamMaterials';
+import { useOrderedMaterials } from './useOrderedMaterials';
+import MaterialPreviewSection from './MaterialPreviewSection';
+import { useThemeStore } from '../../stores/theme';
 
 /**
  * LLM / Vision 节点 —— 完全对齐 gpt-image-2-web Chat (index.html L1600 / L8128~L8400)
@@ -124,10 +127,42 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
   const upstreamMats = useUpstreamMaterials(id);
   const upstreamImages = upstreamMats.images;
 
-  // 上游: 收集 text + image (走响应式 upstreamMats, 与节点内预览取同一份数据)
+  // === 主题适配 (dark / pixel) ===
+  const { theme, style } = useThemeStore();
+  const isDark = theme === 'dark';
+  const isPixel = style === 'pixel';
+
+  // 本地拾取的图片 → 包装为 Material(origin='local') 与上游素材统一在 MaterialPreviewSection 里呈现
+  const localImageMaterials: Material[] = useMemo(
+    () =>
+      pickedFiles.map((f, i) => ({
+        id: `local::image:${i}:${f.name}`,
+        kind: 'image' as const,
+        url: f.dataUrl,
+        sourceNodeId: id,
+        origin: 'local' as const,
+        label: f.name || `本地${i + 1}`,
+      })),
+    [pickedFiles, id],
+  );
+  const allImagesUnordered = useMemo(
+    () => [...localImageMaterials, ...upstreamMats.images],
+    [localImageMaterials, upstreamMats.images],
+  );
+  const materialOrder: string[] = Array.isArray(d?.materialOrder) ? d.materialOrder : [];
+  const orderedImages = useOrderedMaterials(allImagesUnordered, materialOrder);
+  const orderedTexts = useOrderedMaterials(upstreamMats.texts, materialOrder);
+  const setMaterialOrder = (newOrder: string[]) => update({ materialOrder: newOrder });
+  const handleRemoveLocalMaterial = (m: Material) => {
+    if (m.origin !== 'local') return;
+    setPickedFiles((s) => s.filter((f) => f.dataUrl !== m.url));
+  };
+
+  // 上游: 收集 text + image (使用按用户拖拽顺序排好的 ordered 列表，与预览区呈现一致)
   const collectUpstream = (): { text: string; images: string[] } => {
-    const texts = upstreamMats.texts.map((t) => t.url).filter((s) => !!s);
-    const images = upstreamMats.images.map((m) => m.url).filter((s) => !!s);
+    const texts = orderedTexts.map((t) => t.url).filter((s) => !!s);
+    // orderedImages 已包含上游与本地拾取，不需额外 concat pickedFiles
+    const images = orderedImages.map((m) => m.url).filter((s) => !!s);
     void getEdges; // 保留引用避免 unused警告
     void getNodes;
     return { text: texts.join('\n').trim(), images };
@@ -186,7 +221,8 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
     setStreamingText('');
     const upstream = collectUpstream();
     const userText = (upstream.text || localPrompt || '').trim();
-    const userImages = [...upstream.images, ...pickedFiles.map((f) => f.dataUrl)];
+    // 注: orderedImages 已包含本地 pickedFiles + 上游，不再重复拼接
+    const userImages = upstream.images;
     if (!userText && userImages.length === 0) {
       setError('未提供用户输入(无上游 prompt / 本地输入 / 图片)');
       logBus.error('缺少用户输入', src);
@@ -536,98 +572,34 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
           />
         </div>
 
-        {/* 上游图片预览(实时跟随连线变化) —— 与 ImageNode/SeedanceNode 预览风格对齐 */}
-        {upstreamImages.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-[10px] text-emerald-300/80">
-                上游图片 · {upstreamImages.length}
-              </label>
-              <span className="text-[9px] text-white/30">发送时自动带上</span>
-            </div>
-            <div className="flex gap-1 flex-wrap">
-              {upstreamImages.map((m) => (
-                <div
-                  key={m.id}
-                  className="relative w-10 h-10"
-                  title={`来自: ${m.sourceNodeId.slice(-6)}\n${m.url}`}
-                >
-                  <img
-                    src={m.url}
-                    alt={m.label || ''}
-                    data-drag-source
-                    data-drag-kind="image"
-                    data-drag-url={m.url}
-                    data-drag-preview={m.url}
-                    data-drag-node-id={id}
-                    onMouseDown={(e) =>
-                      beginMaterialDrag(e, {
-                        kind: 'image',
-                        url: m.url,
-                        sourceNodeId: id,
-                        previewUrl: m.url,
-                      })
-                    }
-                    className="w-10 h-10 object-cover rounded border border-emerald-400/40 cursor-grab"
-                  />
-                  {/* 左上角小标示: 上游 */}
-                  <span className="absolute -top-1 -left-1 text-[8px] leading-none bg-emerald-500/80 text-white rounded px-1 py-0.5">
-                    ↑
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 图片附件 */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[10px] text-white/50">本地图片(多模态)</label>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="text-[10px] text-emerald-300 hover:text-emerald-200 flex items-center gap-1"
-            >
-              <ImageIcon size={11} /> 选择
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(e) => {
-                handlePickImages(e.target.files);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-              }}
-            />
-          </div>
-          {pickedFiles.length > 0 && (
-            <div className="flex gap-1 flex-wrap">
-              {pickedFiles.map((f, i) => (
-                <div key={i} className="relative w-10 h-10">
-                  <img
-                    src={f.dataUrl}
-                    alt={f.name}
-                    data-drag-source
-                    data-drag-kind="image"
-                    data-drag-url={f.dataUrl}
-                    data-drag-preview={f.dataUrl}
-                    data-drag-node-id={id}
-                    onMouseDown={(e) => beginMaterialDrag(e, { kind: 'image', url: f.dataUrl, sourceNodeId: id, previewUrl: f.dataUrl })}
-                    className="w-10 h-10 object-cover rounded border border-white/10 cursor-grab"
-                  />
-                  <button
-                    onClick={() => removePickedAt(i)}
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center"
-                  >
-                    <X size={9} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* 上游素材聚合预览区 (与 ImageNode / VideoNode / SeedanceNode 使用同一个组件，保证双主题下尺寸/样式一致) */}
+        <MaterialPreviewSection
+          texts={orderedTexts}
+          images={orderedImages}
+          order={materialOrder}
+          onReorder={setMaterialOrder}
+          onRemoveLocal={handleRemoveLocalMaterial}
+          selected={!!selected}
+          isDark={isDark}
+          isPixel={isPixel}
+          groups={['text', 'image']}
+          title="上游素材 + 本地图片"
+          imageUploadAction={{
+            onClick: () => fileInputRef.current?.click(),
+            title: '上传本地图片(多模态)',
+          }}
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(e) => {
+            handlePickImages(e.target.files);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+          }}
+        />
 
         {/* 按钮 */}
         <div className="flex gap-1.5">
