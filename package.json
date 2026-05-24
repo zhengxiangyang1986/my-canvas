@@ -1,7 +1,7 @@
 {
   "name": "t8-penguin-canvas",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "main": "electron/main.cjs",
   "description": "T8-penguin-canvas — AI 节点画布 (Web 端轻量化重构)",
