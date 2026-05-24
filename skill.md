@@ -5189,3 +5189,143 @@ mo.observe(document.body, { childList: true, subtree: true });
 3. **复用现有 useEffect 而不新增**: 原本就有为 spellcheck 设置的 MutationObserver,顺便加上 className 逻辑,零额外资源占用
 
 ---
+
+## §52 节点四角同比例缩放 + width:100% 百分比循环导致连线/缩放失效的修复 (v1.2.2)
+
+### 52.1 需求源
+
+- 用户要求 TextNode / OutputNode / UploadNode 三个节点支持拖动四角同比例缩放
+- 鼠标悬停四角时出现明显感知 UI
+- 不同主风(科技/像素 × 深色/浅色)对应不同视觉
+
+### 52.2 初版实现(邀请的问题)
+
+创建 `src/components/nodes/ResizableCorners.tsx`(通用控件) + `src/styles/index.css` 末尾追加 4 套主题 CSS。节点 root 改造为:
+```tsx
+style={{
+  width: '100%',
+  minWidth: 220,
+  minHeight: '100%',  // ← 问题根源
+}}
+```
+思路: 默认 wrapper auto 时 `min-height: 100%` fallback 0,不强制高;拖大后 wrapper 有具体 height,100% 生效 → root 撑满。
+
+### 52.3 用户反馈严重 Bug
+
+> *“上传素材节点无法连接生成节点了,然后输出素材节点也有问题,只能纵向拉大,下面一堆白色,,,无法同比例拉大缩小”*
+
+两个严重问题:
+1. **UploadNode 无法连接下游**
+2. **OutputNode 只能纵向拉大 + 下方空白**(keepAspectRatio 失效)
+
+### 52.4 根因分析(CSS 百分比循环)
+
+ReactFlow v12 节点 wrapper(`.react-flow__node`)是 **`absolute` 定位 + 默认 width=auto/height=auto**。在节点 root 上设 `width:100%` + `minHeight:100%` 会形成**百分比循环测量**:
+
+```
+wrapper width=auto (按子内容收缩) ←─┐
+                                       │
+   └→ root width=100% (按父计算) ───┘
+        ↑
+        该循环被浏览器处理为 shrink-to-fit
+        → wrapper.measured.width 可能是 0 或不稳定
+```
+
+#### 连线失效原因
+ReactFlow Handle 位置由 `node.internals.handleBounds` 决定,后者依赖 wrapper measured。measured.width≈0 → handleBounds 完全错位 → 鼠标点不到 Handle 原位 → **无法发起连接**。
+
+#### keepAspectRatio 失效原因
+xyflow XYResizer `onResizeStart` 中计算:
+```js
+startValues.aspectRatio = node.measured.width / node.measured.height;
+//                       = 0 / h
+//                       = 0
+```
+拖定右下角(diagonal)时:
+```js
+distX = distY * aspectRatio = distY * 0 = 0
+newWidth = startWidth + distX = startWidth   // 始终不变
+                                            // → clamp 到 minWidth
+newHeight = startHeight + distY              // 自由增长
+```
+结果: **拖大时 width 被锁在 minWidth 附近, height 任意增长 → 纵长条 + 内容只填上半部分 → 下方大片空白**。
+
+### 52.5 最终修复方案(root 始终持有具体 px)
+
+核心: **节点 root 始终有具体 px 尺寸**,避免依赖 wrapper auto 下的百分比 fallback。
+
+#### 代码架构
+
+1) **本地 state 持有尺寸**
+```tsx
+const [size, setSize] = useState<{ w: number; h?: number }>({ w: 260 });
+//                                  ↑                 ↑
+//                          初始具体 px       默认 auto, 拖后具体 px
+```
+
+2) **ResizableCorners onResize 同步**
+```tsx
+<ResizableCorners
+  selected={selected}
+  minWidth={220}
+  minHeight={140}
+  accent="#38bdf8"
+  onResize={(_e, p) => setSize({ w: p.width, h: p.height })}
+/>
+```
+
+3) **root style 读 state**
+```tsx
+style={{
+  width: size.w,           // 始终具体 px → wrapper measured 准确
+  height: size.h,          // 默认 undefined→auto, 跟随内容; 拖后具体 px
+  minWidth: 220,
+}}
+```
+
+4) **内层 flex-1 条件化**(避免默认 root auto 时 flex-1 fallback 0 导致内层缩塌)
+```tsx
+<div className={`p-2.5 ${size.h ? 'flex-1 min-h-0 overflow-auto' : ''}`}>
+  {/* size.h 未设(默认) → block 布局, 跟随内容自然撑高 */}
+  {/* size.h 已设(拖过角) → flex-1 撑满剩余 + min-h-0 允许内容 overflow */}
+</div>
+```
+
+### 52.6 各节点具体参数
+
+| 节点 | 初始 size.w | minWidth | minHeight | accent | 备注 |
+|---|---|---|---|---|---|
+| TextNode | 260 | 220 | 140 | `#38bdf8` (sky-400) | textarea 默认 `h-24`, 拖后 `flex-1 min-h-[72px]` |
+| OutputNode | 320 | 260 | 160 | `accent` (teal-300) | 外层 flex column 内层条件 flex-1; 保留原有多类型门户 + autoOutput |
+| UploadNode | 260 | 220 | 180 | `handleColor` (跟随上传类型) | body 默认 block(上传后被图自然撑大) |
+
+### 52.7 ResizableCorners 控件设计
+
+`src/components/nodes/ResizableCorners.tsx` (80 行) — 多节点复用的同比例缩放控件:
+
+- 4 个 `NodeResizeControl` 划到 4 个角 `position='top-left/top-right/bottom-left/bottom-right'`
+- `keepAspectRatio` 全部 true 同比例
+- 主题 className 组合: `t8-resize-handle--{tech|pixel}-{dark|light}` × `t8-resize-handle--{position}`
+- 仅 `selected=true` 时渲染,保持节点视图纯净
+- 科技风: 用 `--t8-resize-accent` CSS 变量接收 React 传的 accent
+- 像素风: 固定用 `theme-pixel.css` 糖果色 + 硬阴影(方向自动朝外)
+
+### 52.8 反重构检查表
+
+1. **节点 root style 必须有具体 px 完成宽高定位**
+   - ✅ `width: size.w` (本地 state)
+   - ❌ `width: '100%'` (会形成百分比循环)
+2. **height 默认 undefined(auto)**, 拖后才是具体 px
+3. **内层 flex-1 必须条件化** (`size.h ? 'flex-1 min-h-0' : ''`)
+4. **ResizableCorners onResize 必须接上 setSize**
+5. **初始 size.w 必须 ≥ minWidth** (避免 ResizeStart 报警)
+
+### 52.9 经验教训
+
+1. **CSS 百分比 + 父元素 auto = 危险组合**: shrink-to-fit 上下文里子元素用百分比 可能 fallback 为 0 或内容尺寸, 主要看浏览器实现
+2. **xyflow keepAspectRatio 依赖 measured 准确**: 需要 wrapper或 node 本身有明确尺寸,才能算出有效 aspectRatio
+3. **调试思路**: 拖动一个轴动动一个轴不动 → 90% 是 aspectRatio = 0; 检查初始 measured.width/height 是否都有值
+4. **xyflow Handle bounds 同源于 measured**: measured 不准 → 连线也失效; 一体两面
+5. **本地 state 控制节点尺寸 比 100% 响应式更可控**: 避免 CSS 循环 + onResize 回调同步一步到位, xyflow store 中 node.width/height 与 React state 多道路一致
+
+---

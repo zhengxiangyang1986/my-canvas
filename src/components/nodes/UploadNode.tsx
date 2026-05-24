@@ -16,6 +16,7 @@ import { PORT_COLOR } from '../../config/portTypes';
 import { useRunTrigger } from '../../hooks/useRunTrigger';
 import { useDragMaterialStore, type MaterialPayload } from '../../stores/dragMaterial';
 import ImageEditModal, { type ImageEditProduceMeta } from './ImageEditModal';
+import ResizableCorners from './ResizableCorners';
 
 /**
  * UploadNode - 通用上传素材节点
@@ -102,6 +103,10 @@ const UploadNode = ({ id, data, selected }: NodeProps) => {
   const fileSize: number = d?.fileSize || 0;
   const meta = uploadType ? KIND_META[uploadType] : null;
   const url: string | undefined = meta ? d?.[meta.dataField] : undefined;
+
+  // 节点本地尺寸 state: 默认 (260, 高度由内容撑开 — 上传后图/视频会撑高 root)
+  // 拖角后由 ResizableCorners onResize 同步具体 px (保证 measured 准确 + keepAspectRatio 生效 + handleBounds 准确)
+  const [size, setSize] = useState<{ w: number; h?: number }>({ w: 260 });
 
   // === 运行总线: 点击 RUN 后根据已上传素材生成下游 OutputNode ===
   // 设计要点:
@@ -304,13 +309,25 @@ const UploadNode = ({ id, data, selected }: NodeProps) => {
 
   return (
     <div
-      className="relative rounded-xl border-2 transition-colors w-[260px]"
+      className="relative rounded-xl border-2 transition-colors flex flex-col"
       style={{
         background: isDark ? 'rgba(20,20,22,.92)' : 'rgba(255,255,255,.96)',
         backdropFilter: 'blur(8px)',
         borderColor: selected ? handleColor : isDark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.1)',
+        width: size.w,
+        height: size.h, // undefined → auto, 上传后被图/视频自然撑高; 拖角后具体 px
+        minWidth: 220,
+        // 不设 overflow 避免裁掉 ResizableCorners 的 4 角 handle (中心点在节点边缘上)
       }}
     >
+      {/* 四角同比例缩放 (仅选中时出现) — 主题色跟随上传类型的端口色 */}
+      <ResizableCorners
+        selected={selected}
+        minWidth={220}
+        minHeight={180}
+        accent={handleColor}
+        onResize={(_e, p) => setSize({ w: p.width, h: p.height })}
+      />
       {/* 选中时浮动「Edit」按钮 — 仅图像类型可用，与双击预览图等价 */}
       {selected && canEditImage && (
         <button
@@ -389,8 +406,9 @@ const UploadNode = ({ id, data, selected }: NodeProps) => {
         )}
       </div>
 
-      {/* body */}
-      <div className="p-2.5 space-y-2" onMouseDown={(e) => e.stopPropagation()}>
+      {/* body 高度逻辑: root 默认 height=auto 时 body 也 auto 跟随内容 (图/视频) 自然高;
+          root 拖角后有具体 px 时, body flex-1 撑满剩余 + min-h-0 允许内容 overflow */}
+      <div className={`p-2.5 space-y-2 ${size.h ? 'flex-1 min-h-0 overflow-auto' : ''}`} onMouseDown={(e) => e.stopPropagation()}>
         {/* 隐藏的文件输入: accept 三合一, 上传后自动按 MIME 识别 kind */}
         <input
           ref={fileInputRef}

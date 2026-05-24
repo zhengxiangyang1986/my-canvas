@@ -259,3 +259,133 @@ body.cut-mode .react-flow__edge .react-flow__edge-interaction {
   touch-action: none;
   z-index: 2;
 }
+
+/* ===========================================
+ * 节点四角同比例缩放 handle (ResizableCorners.tsx 配套)
+ *
+ * 设计:
+ *   - 仅 4 角, 不显示边线 handle (组件本身就只渲染 4 个 NodeResizeControl)
+ *   - 默认透明度 0.45 低调存在, 节点 hover/handle hover 时高亮
+ *   - 4 套主题: 科技深/科技浅/像素深/像素浅, 视觉与各自主题语言一致
+ *   - 同比例缩放由 NodeResizeControl 的 keepAspectRatio 保证 (拖任意角)
+ * =========================================== */
+.react-flow__resize-control.handle.t8-resize-handle {
+  width: 14px !important;
+  height: 14px !important;
+  /* 基础重置: 让具体主题类决定外观 */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  z-index: 22;
+  opacity: 0.5;
+  transition: opacity 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+  /* 命中区域放大 (避免精准命中难) — 利用伪元素扩展 8px hit-box, 但视觉仍 14x14 */
+  position: absolute;
+}
+.react-flow__resize-control.handle.t8-resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+/* 节点选中后整体出现, 鼠标在节点上时全部 4 个角更明显 */
+.react-flow__node.selected:hover .react-flow__resize-control.handle.t8-resize-handle {
+  opacity: 0.85;
+}
+.react-flow__resize-control.handle.t8-resize-handle:hover {
+  opacity: 1;
+  transform: scale(1.18);
+}
+
+/* --- 科技风 · 浅色 --- */
+.t8-resize-handle--tech-light {
+  background: #ffffff;
+  border: 1.5px solid var(--t8-resize-accent, #0ea5e9);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+.t8-resize-handle--tech-light:hover {
+  background: var(--t8-resize-accent, #0ea5e9);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--t8-resize-accent, #0ea5e9) 22%, transparent),
+    0 2px 10px color-mix(in srgb, var(--t8-resize-accent, #0ea5e9) 55%, transparent);
+}
+
+/* --- 科技风 · 深色 --- */
+.t8-resize-handle--tech-dark {
+  background: #0a0a0b;
+  border: 1.5px solid var(--t8-resize-accent, #38bdf8);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.t8-resize-handle--tech-dark:hover {
+  background: var(--t8-resize-accent, #38bdf8);
+  border-color: #ffffff;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--t8-resize-accent, #38bdf8) 30%, transparent),
+    0 2px 12px color-mix(in srgb, var(--t8-resize-accent, #38bdf8) 65%, transparent);
+}
+
+/* --- 像素风 · 浅色 (糖果色 + 黑描边 + 硬阴影) --- */
+.t8-resize-handle--pixel-light {
+  background: var(--px-yellow, #FFE08A);
+  border: 2px solid var(--px-ink, #1A1410);
+  border-radius: 0 !important;
+  box-shadow: 2px 2px 0 var(--px-ink, #1A1410);
+  width: 13px !important;
+  height: 13px !important;
+}
+.t8-resize-handle--pixel-light:hover {
+  background: var(--px-pink-deep, #FF89A7);
+  box-shadow: 3px 3px 0 var(--px-ink, #1A1410);
+}
+/* 像素风 4 角对应的阴影方向 (硬阴影朝外才好看): 右下角默认 OK, 其余 3 角微调 */
+.t8-resize-handle--pixel-light.t8-resize-handle--top-left {
+  box-shadow: -2px -2px 0 var(--px-ink, #1A1410);
+}
+.t8-resize-handle--pixel-light.t8-resize-handle--top-left:hover {
+  box-shadow: -3px -3px 0 var(--px-ink, #1A1410);
+}
+.t8-resize-handle--pixel-light.t8-resize-handle--top-right {
+  box-shadow: 2px -2px 0 var(--px-ink, #1A1410);
+}
+.t8-resize-handle--pixel-light.t8-resize-handle--top-right:hover {
+  box-shadow: 3px -3px 0 var(--px-ink, #1A1410);
+}
+.t8-resize-handle--pixel-light.t8-resize-handle--bottom-left {
+  box-shadow: -2px 2px 0 var(--px-ink, #1A1410);
+}
+.t8-resize-handle--pixel-light.t8-resize-handle--bottom-left:hover {
+  box-shadow: -3px 3px 0 var(--px-ink, #1A1410);
+}
+
+/* --- 像素风 · 深色 (反相: 浅色块 + 浅描边) --- */
+.t8-resize-handle--pixel-dark {
+  background: var(--px-yellow, #E5C462);
+  border: 2px solid var(--px-ink, #F5EBD7);
+  border-radius: 0 !important;
+  box-shadow: 2px 2px 0 var(--px-ink, #F5EBD7);
+  width: 13px !important;
+  height: 13px !important;
+}
+.t8-resize-handle--pixel-dark:hover {
+  background: var(--px-pink, #FF89A7);
+  box-shadow: 3px 3px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--top-left {
+  box-shadow: -2px -2px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--top-left:hover {
+  box-shadow: -3px -3px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--top-right {
+  box-shadow: 2px -2px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--top-right:hover {
+  box-shadow: 3px -3px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--bottom-left {
+  box-shadow: -2px 2px 0 var(--px-ink, #F5EBD7);
+}
+.t8-resize-handle--pixel-dark.t8-resize-handle--bottom-left:hover {
+  box-shadow: -3px 3px 0 var(--px-ink, #F5EBD7);
+}

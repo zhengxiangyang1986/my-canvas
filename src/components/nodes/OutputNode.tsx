@@ -15,6 +15,7 @@ import { PORT_COLOR } from '../../config/portTypes';
 import ImageEditModal, { type ImageEditProduceMeta } from './ImageEditModal';
 import { useMaterialDropTarget } from '../../hooks/useMaterialDropTarget';
 import { useDragMaterialStore, type MaterialPayload } from '../../stores/dragMaterial';
+import ResizableCorners from './ResizableCorners';
 
 /**
  * OutputNode - 通用输出素材节点 (中继展示型)
@@ -56,6 +57,11 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
   const isDark = theme === 'dark';
   const d = (data as any) || {};
   const rf = useReactFlow();
+
+  // 节点本地尺寸 state: 默认 (320, 高度由内容撑开)
+  // 拖角后由 ResizableCorners onResize 同步具体 px — 保证节点始终有具体尺寸 → wrapper measured 准确
+  // → keepAspectRatio 生效 (同比例缩放) + handleBounds 准确 (连线稳定)
+  const [size, setSize] = useState<{ w: number; h?: number }>({ w: 320 });
 
   // 订阅连入本节点 target handle 的连接变化
   const connections = useNodeConnections({ id, handleType: 'target' });
@@ -383,10 +389,18 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
 
   return (
     <div
-      className="relative"
-      style={{ width: 320 }}
+      className="relative flex flex-col"
+      style={{ width: size.w, height: size.h, minWidth: 260 }}
       {...dropProps}
     >
+      {/* 四角同比例缩放 (仅选中时出现) — 主题色 teal-300 */}
+      <ResizableCorners
+        selected={selected}
+        minWidth={260}
+        minHeight={160}
+        accent={accent}
+        onResize={(_e, p) => setSize({ w: p.width, h: p.height })}
+      />
       {/* 选中时浮动「Edit」按钮 — 仅图像类型可用，与双击预览图等价 */}
       {canEditImage && (
         <button
@@ -459,11 +473,14 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       />
 
       {/* 内层裁切容器: 圆角 + 越界裁切, 不影响外层 handle */}
+      {/* 高度逻辑: root 默认 height=auto 时 内层也 auto 跟随内容自然高;
+          root 拖角后有具体 px 时, 内层 flex-1 撑满剩余 + min-h-0 允许内容 overflow */}
       <div
-        className="rounded-xl border-2 transition-colors"
+        className={`rounded-xl border-2 transition-colors ${size.h ? 'flex-1 min-h-0' : ''}`}
         style={{
           background: isDark ? 'rgb(20,20,22)' : 'rgb(255,255,255)',
-          overflow: 'hidden',
+          overflow: 'auto',
+          width: '100%',
           borderColor: isAccepting
             ? '#22c55e'
             : selected
