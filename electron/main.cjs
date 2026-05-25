@@ -130,7 +130,7 @@ function createMainWindow() {
     minHeight: 640,
     show: false,
     backgroundColor: '#0b0b0d',
-    title: '贞贞的无限画布（企鹅共创版） v1.2.10.5',
+    title: '贞贞的无限画布（企鹅共创版） v1.2.10.6',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -197,7 +197,7 @@ ipcMain.handle('t8pc:get-info', () => ({
   packaged: isPackaged(),
   backendPort,
   userData: getUserDataDir(),
-  version: '1.2.10.5',
+  version: '1.2.10.6',
 }));
 
 // ---------- 生命周期 ----------

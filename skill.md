@@ -1,7 +1,7 @@
 # T8-penguin-canvas · skill.md
 
 > 项目能力 / 接口 / 文件用途速查手册。
-> 版本：v1.2.1 ｜ 仓库：<https://github.com/T8mars/T8-penguin-canvas>
+> 版本：v1.2.10.6 ｜ 仓库：<https://github.com/T8mars/T8-penguin-canvas>
 >
 > v1.2.1 增量（§47）：Electron 打包加密链路 3 处根因修复 + 标准化 SOP 沉淀 — bytenode .jsc loader 复刻（vm.Script + cachedData 直跑、跳过 tmpFile 二次 require）+ asar 外 .t8c 的 require MODULE_NOT_FOUND 回退 loader.cjs 自身（解析 app.asar/node_modules/express|cors|multer|sharp）+ backend/src/config.js 识别 T8PC_PACKAGED/T8PC_USER_DATA/T8PC_FRONTEND_DIST 三环境变量（数据写 userData、NODE_ENV=production）+ backend/src/server.js 打包模式 express.static + SPA 兑底（regex 排除 api/files/input/output 4 前缀）+ main.cjs 三处版本号同步 v1.2.0 + 6 项打包前必检 checklist + 完整 SOP 写入本章作为下次打包唯一参考依据。
 >
@@ -6368,5 +6368,51 @@ src/components/nodes/LoopNode.tsx               克隆链整组 + excludeIds=sub
 2. **双 pass 优于单 pass 调大** —— 直接用大 step 会牺牲紧凑场景的视觉贴近度；先紧凑后跨步保留两端体验
 3. **effect 内多源 mutation 的快照陷阱** —— React state 在同步 effect 内不会变，必须用本地累加器让兄弟 mutation 互相可见（与 phase24 RH `computeFreshValuesNow` 同款思路）
 4. **截图诊断要看坐标差** —— 用户截图的两个 OutputNode `(x1, y1)` 与 `(x2, y2)` 差值应是 `step × N + offset`，差值远小于节点尺寸时立即想到 step 不够大
+
+---
+
+### v1.2.10.6 · placement hotfix3+4 —— 远距离偏移 + 无限循环 + reorder 覆盖修复
+
+**用户反馈的三个连续问题**：
+1. 「完全不会避开」—— reorder-grid useEffect 每次 nodes 变化时重计算全部 output 位置，用 `baseX = src.x + srcW + 80`（无偏移）覆盖了 autoOutput 的 placeBatchNodes 结果
+2. 「避开了但离得非常远」—— adaptiveStep 取画布上最大节点尺寸(500+px)作为步长，导致 spiral 一步跳远；gap=32 让上方高节点底部延伸到目标区域而误判碰撞
+3. 「Maximum update depth exceeded」—— reorder 中调用 placeBatchNodes 导致: 移动节点 → setNodes → re-render → reorder 再次执行 → 不同偏移 → 无限循环
+
+**修复记录**：
+
+| commit | 修复内容 |
+|--------|----------|
+| hotfix3 | reorder-grid 内调 placeBatchNodes + pendingPlacedNodes 通用路径 + onConnect 用 placeSingleNode + FramePair 空 need 提前 continue |
+| hotfix3-距离 | reorder 只避开 output 节点 + gap=0 + step=40 + maxTries=12 |
+| hotfix4-重叠 | reorder 碰撞检测排除自身组，其余所有节点参与检测 |
+| hotfix4-循环 | 移除 reorder 中的 placeBatchNodes，用第一个节点当前位置作为锚点 |
+| hotfix4-距离 | 去掉 adaptiveStep + autoOutput 用 gap=0 |
+
+**最终架构（v1.2.10.6 稳定版）**：
+
+```
+职责分离:
+  • autoOutput (Canvas.tsx)  —— 创建节点时做碰撞避让 (placeBatchNodes, 一次性)
+      - gap=0 (只防止实际像素重叠)
+      - step=80 + maxTries=64 (单 pass, 紧凑搜索)
+      - pendingPlacedNodes 累加器让多源互见
+  • reorder-grid (Canvas.tsx) —— 纯内部网格对齐 (colX/rowY)
+      - 用第一个节点的当前位置作为锚点 (baseX/baseY)
+      - 不调 placeBatchNodes —— 避免无限循环
+      - 保留 autoOutput 算好的偏移不覆盖
+```
+
+**nodePlacement.ts 简化（v1.2.10.6）**：
+- 去掉双 pass spiral —— 不再使用 `computeAdaptiveStep`
+- `resolveSingleSpawn / resolveBatchSpawn` 简化为: 单 pass（step=80, maxTries=64）→ 兜底
+- 原因：adaptiveStep 取画布上最大节点尺寸作步长，一步可跳 500+px，导致输出离源节点一屏远
+- gap=0 后碰撞区域缩小，固定 step=80 在 64 次内即可找到空位
+
+**hotfix3+4 经验教训**：
+1. **reorder effect 绝不能调 setNodes 引起的位置计算** —— 否则形成 nodes 变化 → effect 触发 → 计算新位置 → setNodes → 无限循环
+2. **职责分离**: 碰撞避让的职责应该在创建时一次性完成，而不是在每次 nodes 变化时重复执行
+3. **gap=0 是 autoOutput 的正确设置** —— 输出节点只需不重叠，不需要 32px 额外缓冲。上方高节点底部刚好触碰目标区域时，gap=32 会误判碰撞而推远输出
+4. **adaptiveStep 不适合用于多节点画布** —— 画布上有各种尺寸节点，取最大值作步长会让小场景也跳很远
+5. **reorder 用第一个节点位置作锚点** —— 保留 autoOutput 的偏移结果，同时只做内部网格对齐
 
 ---
