@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar';
 import Canvas from './components/Canvas';
 import ApiSettingsModal from './components/ApiSettings';
 import ErrorBoundary from './components/ErrorBoundary';
+import { RHToolsProvider } from './providers/RHToolsProvider';
 import * as api from './services/api';
 import type { NodeType } from './types/canvas';
 
@@ -193,6 +194,7 @@ function App() {
   };
 
   return (
+    <RHToolsProvider>
     <div
       className={`h-screen flex flex-col overflow-hidden ${
         isPixel
@@ -864,6 +866,7 @@ function App() {
       {/* API 设置弹窗 */}
       <ApiSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+    </RHToolsProvider>
   );
 }
 
