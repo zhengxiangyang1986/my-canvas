@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react';
 import {
   ReactFlow,
   Background,
@@ -38,6 +38,7 @@ import {
   rectOf,
   type Rect as PlacementRect,
 } from '../utils/nodePlacement';
+import { createUploadDataFromItems, type MediaItem, type MediaKind } from '../utils/mediaCollection';
 import * as api from '../services/api';
 import CanvasToolbar from './CanvasToolbar';
 import TerminalPanel from './TerminalPanel';
@@ -256,6 +257,80 @@ export interface AddNodeOptions {
 
 export type AddNodeFn = (type: NodeType, options?: AddNodeOptions) => void;
 
+const MEDIA_EXTENSIONS: Record<MediaKind, string[]> = {
+  image: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'],
+  video: ['mp4', 'webm', 'mov', 'm4v', 'mkv'],
+  audio: ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'],
+};
+
+function inferCanvasMediaKind(file: File): MediaKind | null {
+  const mime = file.type || '';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  const ext = (file.name || '').split('.').pop()?.toLowerCase();
+  if (!ext) return null;
+  if (MEDIA_EXTENSIONS.image.includes(ext)) return 'image';
+  if (MEDIA_EXTENSIONS.video.includes(ext)) return 'video';
+  if (MEDIA_EXTENSIONS.audio.includes(ext)) return 'audio';
+  return null;
+}
+
+function fallbackMediaName(file: File, kind: MediaKind, index: number): string {
+  if (file.name) return file.name;
+  const ext = kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'wav';
+  return `canvas-${kind}-${Date.now()}-${index + 1}.${ext}`;
+}
+
+async function uploadCanvasMediaFile(file: File, kind: MediaKind, index: number): Promise<MediaItem> {
+  const fileName = fallbackMediaName(file, kind, index);
+  const fd = new FormData();
+  fd.append('file', file, fileName);
+  const res = await fetch('/api/files/upload', { method: 'POST', body: fd });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json.error || `上传失败 HTTP ${res.status}`);
+  }
+  if (!json.success || !json.data?.url) {
+    throw new Error(json.error || '上传失败:未返回 URL');
+  }
+  return {
+    kind,
+    url: json.data.url,
+    name: fileName,
+    size: file.size,
+    mime: file.type,
+  };
+}
+
+function collectCanvasMediaFiles(dataTransfer: DataTransfer | null | undefined): File[] {
+  if (!dataTransfer) return [];
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const push = (file: File | null) => {
+    if (!file || !inferCanvasMediaKind(file)) return;
+    const key = `${file.name}|${file.size}|${file.type}|${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  Array.from(dataTransfer.files || []).forEach(push);
+  Array.from(dataTransfer.items || []).forEach((item) => {
+    if (item.kind === 'file') push(item.getAsFile());
+  });
+  return files;
+}
+
+function hasFileTransfer(dataTransfer: DataTransfer | null | undefined): boolean {
+  return Array.from(dataTransfer?.types || []).includes('Files');
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  const tag = el?.tagName?.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el?.isContentEditable;
+}
+
 interface CanvasInnerProps {
   onAddNodeRef?: React.MutableRefObject<AddNodeFn | null>;
 }
@@ -282,6 +357,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   const clipboardRef = useRef<{ nodes: Node[]; edges: Edge[]; incomingEdges?: Edge[]; outgoingEdges?: Edge[] } | null>(null);
   const [clipboardCount, setClipboardCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastCanvasPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const internalPasteTimerRef = useRef<number | null>(null);
 
   // 拖线到空白处的候选节点菜单(connection picker)
   const [picker, setPicker] = useState<{
@@ -478,6 +555,107 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       setNodes((prev) => [...prev, newNode]);
     },
     [screenToFlowPosition, nodes, getViewport, setCenter]
+  );
+
+  const createUploadNodesFromFiles = useCallback(
+    async (rawFiles: File[], atScreen?: { x: number; y: number }) => {
+      const buckets: Record<MediaKind, File[]> = { image: [], video: [], audio: [] };
+      let skipped = 0;
+      rawFiles.forEach((file) => {
+        const kind = inferCanvasMediaKind(file);
+        if (!kind) {
+          skipped += 1;
+          return;
+        }
+        buckets[kind].push(file);
+      });
+
+      const kinds = (['image', 'video', 'audio'] as MediaKind[]).filter((kind) => buckets[kind].length > 0);
+      if (kinds.length === 0) return false;
+
+      const payloads: Array<{ kind: MediaKind; items: MediaItem[] }> = [];
+      const failures: string[] = [];
+      for (const kind of kinds) {
+        const items: MediaItem[] = [];
+        for (let i = 0; i < buckets[kind].length; i += 1) {
+          const file = buckets[kind][i];
+          try {
+            items.push(await uploadCanvasMediaFile(file, kind, i));
+          } catch (err: any) {
+            failures.push(`${file.name || kind}: ${err?.message || '上传失败'}`);
+          }
+        }
+        if (items.length > 0) payloads.push({ kind, items });
+      }
+
+      if (payloads.length === 0) {
+        if (failures.length > 0) alert(`素材导入失败:\n${failures.slice(0, 5).join('\n')}`);
+        return true;
+      }
+
+      const flowEl = document.querySelector('.react-flow') as HTMLElement | null;
+      const rect = flowEl?.getBoundingClientRect();
+      const screenPoint =
+        atScreen ||
+        lastCanvasPointerRef.current ||
+        (rect
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : { x: window.innerWidth / 2, y: window.innerHeight / 2 });
+      const base = screenToFlowPosition(screenPoint);
+      const size = defaultSizeOf('upload');
+      const desired = payloads.map((_, index) => ({
+        x: base.x - size.w / 2 + (index % 3) * 300,
+        y: base.y - size.h / 2 + Math.floor(index / 3) * 300,
+        w: size.w,
+        h: size.h,
+      }));
+      const offset = placeBatchNodes(desired, nodesRef.current, {
+        source: 'placement:canvas-media-upload',
+      });
+      const stamp = Date.now();
+      const newNodes = payloads.map((payload, index) => ({
+        id: `upload-canvas-${payload.kind}-${stamp}-${index}-${Math.random().toString(36).slice(2, 6)}`,
+        type: 'upload',
+        position: {
+          x: desired[index].x + offset.dx,
+          y: desired[index].y + offset.dy,
+        },
+        selected: true,
+        data: createUploadDataFromItems(payload.kind, payload.items),
+      })) as Node[];
+
+      setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...newNodes]);
+      if (skipped > 0) {
+        console.warn(`画布导入素材时跳过 ${skipped} 个不支持的文件`);
+      }
+      if (failures.length > 0) {
+        alert(`部分素材上传失败:\n${failures.slice(0, 5).join('\n')}`);
+      }
+      return true;
+    },
+    [screenToFlowPosition]
+  );
+
+  const handleCanvasPointerMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    lastCanvasPointerRef.current = { x: e.clientX, y: e.clientY };
+  }, []);
+
+  const onCanvasFileDragOver = useCallback((e: ReactDragEvent) => {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const onCanvasFileDrop = useCallback(
+    (e: ReactDragEvent) => {
+      if (!hasFileTransfer(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const files = collectCanvasMediaFiles(e.dataTransfer);
+      if (files.length === 0) return;
+      void createUploadNodesFromFiles(files, { x: e.clientX, y: e.clientY });
+    },
+    [createUploadNodesFromFiles]
   );
 
   // ===== 复制 / 粘贴 / 删除 =====
@@ -2408,6 +2586,24 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
     }
   }, [nodes, edges, loaded]);
 
+  // ===== 外部素材粘贴: Ctrl+V 图像/视频/音频直接生成上传素材节点 =====
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!activeId || isTextEditingTarget(e.target)) return;
+      const files = collectCanvasMediaFiles(e.clipboardData);
+      if (files.length === 0) return;
+      if (internalPasteTimerRef.current) {
+        window.clearTimeout(internalPasteTimerRef.current);
+        internalPasteTimerRef.current = null;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      void createUploadNodesFromFiles(files);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [activeId, createUploadNodesFromFiles]);
+
   // ===== 全局快捷键 =====
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2439,7 +2635,11 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         e.preventDefault();
         handlePaste(true);
       } else if (ctrl && e.key.toLowerCase() === 'v') {
-        handlePaste(false);
+        if (internalPasteTimerRef.current) window.clearTimeout(internalPasteTimerRef.current);
+        internalPasteTimerRef.current = window.setTimeout(() => {
+          internalPasteTimerRef.current = null;
+          handlePaste(false);
+        }, 0);
       } else if (ctrl && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         handleDuplicate();
@@ -2463,7 +2663,13 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      if (internalPasteTimerRef.current) {
+        window.clearTimeout(internalPasteTimerRef.current);
+        internalPasteTimerRef.current = null;
+      }
+    };
   }, [histUndo, histRedo, handleCopy, handlePaste, handleDuplicate, handleDeleteSelected, handleCreateGroup, nodes, selectedCount]);
 
   // 全局滚轮拦截 —— 自动给所有节点内的 input / textarea / select / contenteditable
@@ -2523,6 +2729,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       data-theme-visual={visualStyle}
       style={{ background: bgColor }}
       onContextMenuCapture={onCanvasContextMenuCapture}
+      onMouseMove={handleCanvasPointerMove}
     >
       <CanvasToolbar
         canUndo={canUndo}
@@ -2570,6 +2777,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         onSelectionContextMenu={onSelectionContextMenu}
         onNodeContextMenu={onNodeContextMenu}
         onPaneContextMenu={onPaneContextMenu}
+        onDragOver={onCanvasFileDragOver}
+        onDrop={onCanvasFileDrop}
         onSelectionChange={onSelectionChange}
         onSelectionEnd={onSelectionEnd}
         selectionKeyCode={memoSelectionKeyCode}
