@@ -74,7 +74,7 @@ export const NODE_PORTS: Record<string, NodePorts> = {
   // ========== Utility ==========
   'drawing-board': { inputs: ['image'], outputs: ['image'] },
   browser: { inputs: [], outputs: ['text', 'image'] },
-  'image-compare': { inputs: ['image'], outputs: [] },
+  'image-compare': { inputs: ['image'], outputs: ['image'] },
   'frame-extractor': { inputs: ['video'], outputs: ['image'] },
   // 首尾帧获取: 视频抽首/尾两帧 → 双 source handle (id=first/last) 输出 image
   'frame-pair': { inputs: ['video'], outputs: ['image'] },

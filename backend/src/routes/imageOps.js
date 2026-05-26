@@ -74,6 +74,124 @@ function chooseEncoder(meta) {
   };
 }
 
+function clampNumber(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeCompareMode(v) {
+  const s = String(v || 'slider');
+  if (s === 'checker') return 'focus';
+  if (['slider', 'side-by-side', 'overlay', 'blink', 'heatmap', 'focus'].includes(s)) return s;
+  return 'slider';
+}
+
+function normalizeAlign(v) {
+  const s = String(v || 'contain');
+  if (s === 'cover' || s === 'fill' || s === 'contain') return s;
+  return 'contain';
+}
+
+async function normalizeForCompare(buffer, width, height, align) {
+  return sharp(buffer)
+    .resize(width, height, {
+      fit: align,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .ensureAlpha()
+    .png()
+    .toBuffer();
+}
+
+async function rawRgba(pngBuffer, width, height) {
+  return sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: false });
+}
+
+function computeCompareMetrics(rawA, rawB, width, height, threshold) {
+  let sum = 0;
+  let max = 0;
+  let changed = 0;
+  const px = width * height;
+  for (let i = 0; i < rawA.length; i += 4) {
+    const diff = (
+      Math.abs(rawA[i] - rawB[i]) +
+      Math.abs(rawA[i + 1] - rawB[i + 1]) +
+      Math.abs(rawA[i + 2] - rawB[i + 2])
+    ) / 3;
+    sum += diff;
+    if (diff > max) max = diff;
+    if (diff >= threshold) changed += 1;
+  }
+  return {
+    meanDiff: px ? Number((sum / px).toFixed(2)) : 0,
+    maxDiff: Number(max.toFixed(2)),
+    changedRatio: px ? Number((changed / px).toFixed(4)) : 0,
+  };
+}
+
+function blendOverlay(rawA, rawB, opacity) {
+  const out = Buffer.alloc(rawA.length);
+  const o = Math.max(0, Math.min(1, opacity));
+  for (let i = 0; i < rawA.length; i += 4) {
+    out[i] = Math.round(rawA[i] * (1 - o) + rawB[i] * o);
+    out[i + 1] = Math.round(rawA[i + 1] * (1 - o) + rawB[i + 1] * o);
+    out[i + 2] = Math.round(rawA[i + 2] * (1 - o) + rawB[i + 2] * o);
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
+function makeHeatmap(rawA, rawB, threshold) {
+  const out = Buffer.alloc(rawA.length);
+  for (let i = 0; i < rawA.length; i += 4) {
+    const diff = (
+      Math.abs(rawA[i] - rawB[i]) +
+      Math.abs(rawA[i + 1] - rawB[i + 1]) +
+      Math.abs(rawA[i + 2] - rawB[i + 2])
+    ) / 3;
+    const intensity = Math.max(0, Math.min(1, (diff - threshold) / Math.max(1, 255 - threshold)));
+    const mix = diff < threshold ? 0 : Math.max(0.3, intensity * 0.82);
+    const heatR = 255;
+    const heatG = Math.round(232 * (1 - intensity) + 48 * intensity);
+    const heatB = Math.round(60 * (1 - intensity));
+    const base = diff < threshold ? 0.86 : 0.62;
+    out[i] = Math.round(rawA[i] * base * (1 - mix) + heatR * mix);
+    out[i + 1] = Math.round(rawA[i + 1] * base * (1 - mix) + heatG * mix);
+    out[i + 2] = Math.round(rawA[i + 2] * base * (1 - mix) + heatB * mix);
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
+function makeFocus(rawA, rawB, threshold) {
+  const out = Buffer.alloc(rawA.length);
+  for (let i = 0; i < rawA.length; i += 4) {
+    const diff = (
+      Math.abs(rawA[i] - rawB[i]) +
+      Math.abs(rawA[i + 1] - rawB[i + 1]) +
+      Math.abs(rawA[i + 2] - rawB[i + 2])
+    ) / 3;
+    const intensity = Math.max(0, Math.min(1, (diff - threshold) / Math.max(1, 255 - threshold)));
+    if (diff < threshold) {
+      const gray = rawA[i] * 0.299 + rawA[i + 1] * 0.587 + rawA[i + 2] * 0.114;
+      out[i] = Math.round(gray * 0.58);
+      out[i + 1] = Math.round(gray * 0.58);
+      out[i + 2] = Math.round(gray * 0.58);
+    } else {
+      const mix = Math.max(0.18, intensity * 0.36);
+      out[i] = Math.round(rawB[i] * (1 - mix) + 255 * mix);
+      out[i + 1] = Math.round(rawB[i + 1] * (1 - mix) + 148 * mix);
+      out[i + 2] = Math.round(rawB[i + 2] * (1 - mix) + 36 * mix);
+    }
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
 // ========== POST /api/image/resize — 尺寸调整 ==========
 // body: { imageUrl, width, height, fit? }
 router.post('/resize', async (req, res) => {
@@ -286,6 +404,117 @@ router.post('/combine', async (req, res) => {
     res.json({ success: true, data: { imageUrl: saveBuffer(out, 'png') } });
   } catch (e) {
     console.error('combine 错误:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ========== POST /api/image/compare — 图像对比 ==========
+// body: { imageAUrl, imageBUrl, mode, align?, split?, opacity?, threshold? }
+router.post('/compare', async (req, res) => {
+  try {
+    const {
+      imageAUrl,
+      imageBUrl,
+      mode,
+      align,
+      split,
+      opacity,
+      threshold,
+    } = req.body || {};
+    if (!imageAUrl || !imageBUrl) {
+      return res.status(400).json({ success: false, error: 'imageAUrl / imageBUrl 必填' });
+    }
+
+    const outMode = normalizeCompareMode(mode);
+    const fit = normalizeAlign(align);
+    const splitPct = clampNumber(split, 0, 100, 50);
+    const opacityPct = clampNumber(opacity, 0, 100, 50) / 100;
+    const thresholdValue = clampNumber(threshold, 0, 255, 24);
+
+    const [bufA, bufB] = await Promise.all([
+      fetchImageBuffer(imageAUrl),
+      fetchImageBuffer(imageBUrl),
+    ]);
+    const [metaA, metaB] = await Promise.all([
+      sharp(bufA).metadata(),
+      sharp(bufB).metadata(),
+    ]);
+    const width = metaA.width || 0;
+    const height = metaA.height || 0;
+    if (!width || !height) throw new Error('无法读取原图尺寸');
+
+    const [pngA, pngB] = await Promise.all([
+      normalizeForCompare(bufA, width, height, 'fill'),
+      normalizeForCompare(bufB, width, height, fit),
+    ]);
+    const [rawA, rawB] = await Promise.all([
+      rawRgba(pngA, width, height),
+      rawRgba(pngB, width, height),
+    ]);
+    const metrics = {
+      width,
+      height,
+      imageA: { width: metaA.width || 0, height: metaA.height || 0 },
+      imageB: { width: metaB.width || 0, height: metaB.height || 0 },
+      threshold: thresholdValue,
+      ...computeCompareMetrics(rawA, rawB, width, height, thresholdValue),
+    };
+
+    let out;
+    if (outMode === 'side-by-side' || outMode === 'blink') {
+      const gap = 16;
+      out = await sharp({
+        create: {
+          width: width * 2 + gap,
+          height,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+      })
+        .composite([
+          { input: pngA, left: 0, top: 0 },
+          { input: pngB, left: width + gap, top: 0 },
+        ])
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+    } else if (outMode === 'overlay') {
+      const raw = blendOverlay(rawA, rawB, opacityPct);
+      out = await sharp(raw, { raw: { width, height, channels: 4 } })
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+    } else if (outMode === 'heatmap') {
+      const raw = makeHeatmap(rawA, rawB, thresholdValue);
+      out = await sharp(raw, { raw: { width, height, channels: 4 } })
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+    } else if (outMode === 'focus') {
+      const raw = makeFocus(rawA, rawB, thresholdValue);
+      out = await sharp(raw, { raw: { width, height, channels: 4 } })
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+    } else {
+      const clipW = Math.max(1, Math.min(width, Math.round(width * splitPct / 100)));
+      const clippedB = await sharp(pngB)
+        .extract({ left: 0, top: 0, width: clipW, height })
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+      const lineX = Math.max(0, Math.min(width - 2, clipW - 1));
+      const lineSvg = Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="${height}" viewBox="0 0 4 ${height}"><rect x="1" y="0" width="2" height="${height}" fill="#fb923c"/><rect x="0" y="0" width="4" height="${height}" fill="none" stroke="#ffffff" stroke-opacity=".85" stroke-width="1"/></svg>`
+      );
+      out = await sharp(pngA)
+        .composite([
+          { input: clippedB, left: 0, top: 0 },
+          { input: lineSvg, left: lineX, top: 0 },
+        ])
+        .png({ compressionLevel: 3, effort: 1 })
+        .toBuffer();
+    }
+
+    const imageUrl = await saveBufferAsync(out, 'png');
+    res.json({ success: true, data: { imageUrl, metrics } });
+  } catch (e) {
+    console.error('compare 错误:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });

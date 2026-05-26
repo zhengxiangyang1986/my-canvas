@@ -1,7 +1,7 @@
 {
   "$schema": "本文件为 T8-penguin-canvas 节点清单防丢失锁,任何节点删减都需要在 roadmap.md 中说明并更新本文件。",
   "version": "1.3.7",
-  "lastUpdated": "2026-05-26-v1.3.7-context-menu-op-floating-ui",
+  "lastUpdated": "2026-05-26-v1.3.7-image-compare-node",
   "packaging": {
     "description": "Electron NSIS 桌面端打包链路(v1.2.1 起标准化, 严禁未明确指令主动打包)。完整产物拓扑: app.asar(electron/{main,loader,preload}.cjs + node_modules) + app.asar.unpacked(node_modules/sharp + @img) + resources/backend-enc/*.t8c(extraResources, asar 外) + resources/frontend(extraResources, asar 外)。前端版本号由 vite define 注入 __APP_VERSION__、Sidebar 左下角自动同步。",
     "scripts": {
@@ -177,7 +177,8 @@
     "phase47": { "label": "创作资源库 (v1.3.4)", "status": "complete", "items": ["新增顶部「资源库」入口，打开右侧抽屉；图像 / 视频 / 音频三类独立 Tab、独立分类、搜索、收藏筛选与资源卡片管理", "任意上传或生成素材预览右键新增「加入资源库」菜单，可选择现有分类或新建分类；入库时复制一份到资源库目录，不依赖原 input/output 文件长期存在", "设置页新增 resourceLibraryPath，默认 D:\\zhenzhen\\resources；资源文件与 resource_library.json 元数据都保存在该路径，路径不存在时自动创建，方便更换版本后继续读取", "后端新增 backend/src/routes/resources.js，提供 /api/resources/categories、/api/resources/items、/api/resources/file/:id、/api/resources/thumb/:id；支持本地 input/output 复制、远端 URL 拉取、sha256 去重、删除资源库副本与图片缩略图生成", "远端 URL 入库增加安全护栏：本机/内网地址禁止拉取，30 秒超时，单个远端资源限制 512MB；本地 input/output 资源不受该限制", "资源库卡片支持图片缩略图、视频悬停播放预览、音频播放器、悬停放大、重命名、改分类、收藏、删除、插入画布；插入画布会创建带对应素材 URL 的 UploadNode", "资源库卡片保留 data-drag-source 协议，Ctrl+拖拽可继续投放到现有素材接收节点；双主题 UI 分别适配像素风与科技风", "electron/_post_build.cjs 增加 backend-enc/routes/resources.t8c 必存在校验，防止 Electron 用户包漏掉资源库后端"] },
     "phase48": { "label": "资源库像素风操作按钮优化 (v1.3.5)", "status": "complete", "items": ["资源库卡片在像素风下取消「插入」文字胶囊，改为 32px 圆形加号图标按钮，避免音频卡片底部出现文字挤压和换行", "像素风插入 / 重命名 / 删除三个操作按钮统一为等尺寸圆形图标按钮，保留 title 与 aria-label，科技风仍保留「+ 插入」文字按钮", "公开版本同步到 1.3.5：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 全部同步"] },
     "phase49": { "label": "主题模板系统 + OP 风格 + 主题音乐 (v1.3.6)", "status": "complete", "items": ["新增 ThemeTemplate v2：内置科技风、像素糖果风、OP 风格三套模板，模板包含 light/dark tokens、visuals 风格元数据与 music 配置", "新增主题模板管理器：设置页支持自定义模板路径，默认 D:\\zhenzhen\\theme-templates；支持导入、导出、复制、编辑、保存、删除自定义模板，后端 /api/themes/templates 负责 JSON 持久化与校验", "新增 OP 风格视觉：海图画布、悬赏令节点框、草帽半透明水印、OP 顶部栏/侧边栏/MiniMap/控制条/GroupBox/端口样式，并修复明暗模式文字可读性与端口悬停偏移", "新增主题音乐按钮：默认静音，位于控制条上方并与放大缩小条对齐；科技风默认 classic-one-summer-day.mp3，像素风默认 pixel-theme-of-sss.mp3，OP 风格默认 op-battle-scars.mp3，用户可在模板编辑器上传替换", "主题设计规范沉淀到 features.json 与本地 skill.md：新增节点和全局 UI 必须优先使用 ThemeTokens、visuals、通用 t8-* CSS 类和模板变量，避免每个节点重复写主题分支", "公开版本同步到 1.3.6：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 全部同步"] },
-    "phase50": { "label": "节点右键菜单与 OP 浮层层级修复 (v1.3.7)", "status": "complete", "items": ["修复节点非素材区域右键无响应：素材资源库右键菜单不再用 elementsFromPoint 穿透堆叠层查找 data-drag-source，只响应实际点击目标的最近素材元素，避免误拦截节点普通区域", "Canvas 增加 onContextMenuCapture 兜底：右键落在 .react-flow__node 内且不是素材预览时，统一打开原节点菜单，恢复复制、快速复制、删除、打组、组执行等操作", "OP 风格修复浮层被主题样式压回画布层的问题：theme-op.css 不再对 .t8-canvas-shell 的所有直接子元素强制 position:relative/z-index:1，只限定 ReactFlow 主画布层", "拖线候选菜单、节点右键菜单、空白画布右键菜单统一添加 data-canvas-floating-ui，并在 OP 风格下强制 fixed + 高 z-index，防止后续主题皮肤再次误伤浮层", "公开版本同步到 1.3.7：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 全部同步"] }
+    "phase50": { "label": "节点右键菜单与 OP 浮层层级修复 (v1.3.7)", "status": "complete", "items": ["修复节点非素材区域右键无响应：素材资源库右键菜单不再用 elementsFromPoint 穿透堆叠层查找 data-drag-source，只响应实际点击目标的最近素材元素，避免误拦截节点普通区域", "Canvas 增加 onContextMenuCapture 兜底：右键落在 .react-flow__node 内且不是素材预览时，统一打开原节点菜单，恢复复制、快速复制、删除、打组、组执行等操作", "OP 风格修复浮层被主题样式压回画布层的问题：theme-op.css 不再对 .t8-canvas-shell 的所有直接子元素强制 position:relative/z-index:1，只限定 ReactFlow 主画布层", "拖线候选菜单、节点右键菜单、空白画布右键菜单统一添加 data-canvas-floating-ui，并在 OP 风格下强制 fixed + 高 z-index，防止后续主题皮肤再次误伤浮层", "公开版本同步到 1.3.7：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 全部同步"] },
+    "phase51": { "label": "图像对比工具节点升级", "status": "complete", "items": ["复活原隐藏 image-compare 节点，正式显示为工具节点「图像对比」", "节点提供 A/B 两个图像输入口和一个 image 输出口；连入两张图后无需运行即可在节点内即时预览，输入口旁不再额外显示 A/B 小标签", "支持滑杆、并排、透明叠加、闪烁、差异热力图、差异聚焦 6 种对比方式，并提供 contain/cover/fill 对齐策略与变化比例统计", "热力图改为 A 图底图 + 差异暖色高亮；棋盘模式替换为更实用的差异聚焦，未变化区域降噪变暗、变化区域保留 B 图细节", "点击运行调用 POST /api/image/compare 生成静态对比结果图，写入 data.imageUrl；若旧后端未提供 compare 路由，前端自动用 canvas 兜底生成并上传 base64", "图像对比加入 Canvas 与 NodeActionBar 的可执行节点列表，支持选中运行、顶部 RUN 与批量运行"] }
   },
   "categories": {
     "input": {
@@ -227,7 +228,7 @@
       "nodes": [
         { "type": "drawing-board", "label": "画板", "description": "手绘 / 涂抹", "hidden": true },
         { "type": "browser", "label": "浏览器", "description": "网页内嵌", "hidden": true },
-        { "type": "image-compare", "label": "图片对比", "description": "前后对比", "hidden": true },
+        { "type": "image-compare", "label": "图像对比", "description": "双图滑杆 / 并排 / 叠加 / 闪烁 / 热力图 / 差异聚焦，运行后输出一张对比结果图" },
         { "type": "frame-extractor", "label": "抽帧", "description": "视频抽帧", "hidden": true },
         { "type": "frame-pair", "label": "首尾帧获取", "description": "v1.2.7 新增。输入一个视频节点，运行后抽取首帧与尾帧，输出 2 个 image 素材(双 source handle id=first/last)。浏览器端 video+canvas 抽帧上传 base64，双主题 (像素风糖果色/科技风玻璃)，接入运行总线可被批量运行调起" },
         { "type": "loop", "label": "循环器", "description": "v1.2.8 新增。接多个同类型素材(text/image/video/audio)，两种模式: 串联逐个注入自身进发下游可执行子图 / 并联克隆 (N-1) 份子图并发跱发。采集输出位序位填 null，永久保留克隆节点，克隆块垂直堆叠(yOffset = i × blockH)，使用 runBus.runningIds + triggerRunMany 多节点并发触发。双主题 violet 调" },
@@ -408,6 +409,7 @@
         "POST /api/image/upscale — lanczos3 放大",
         "POST /api/image/grid-crop — 九宫格切图",
         "POST /api/image/combine — 横/纵向拼接",
+        "POST /api/image/compare — 双图对比结果生成(slider/side-by-side/blink/overlay/heatmap/focus)",
         "POST /api/image/remove-bg — 抠图(占位)"
       ],
       "proxy": [
@@ -445,14 +447,14 @@
     "image", "edit",
     "multi-angle-3d", "panorama-720", "penguin-portrait",
     "video", "seedance", "audio", "llm", "runninghub", "runninghub-wallet", "rh-tools",
-    "resize", "upscale", "grid-crop", "remove-bg", "combine",
+    "resize", "upscale", "grid-crop", "remove-bg", "combine", "image-compare",
     "frame-extractor", "frame-pair"
   ],
   "nonExecutableNodeTypes": {
     "description": "不参与批量运行的节点(输入 / 纯展示 / 参数谷 / 工具箱提示)",
     "nodes": [
       "upload", "text", "idea", "bp", "relay",
-      "portrait-metadata", "storyboard-grid", "image-compare", "video-output",
+      "portrait-metadata", "storyboard-grid", "video-output",
       "drawing-board", "browser", "rh-config",
       "cinematic", "video-motion"
     ]

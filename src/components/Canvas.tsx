@@ -201,6 +201,7 @@ const INITIAL_DATA: Record<string, Record<string, any>> = {
   loop: { mode: 'serial', kind: 'image', outputs: [], progress: { done: 0, total: 0, ok: 0, fail: 0 } },
   // 从合集获取: 默认 image + 第 1 个
   'pick-from-set': { pickKind: 'image', pickIndex: 1 },
+  'image-compare': { mode: 'slider', align: 'contain', split: 50, opacity: 50, threshold: 24 },
 };
 
 // 可被“批量运行”调起的节点类型集合
@@ -211,7 +212,7 @@ const EXECUTABLE_NODE_TYPES = new Set<string>([
   'video', 'seedance', 'audio', 'llm', 'runninghub', 'runninghub-wallet',
   // v1.2.10.1: rh-tools 与 RunningHub 同质，同样可被批量运行调起
   'rh-tools',
-  'resize', 'upscale', 'grid-crop', 'remove-bg', 'combine',
+  'resize', 'upscale', 'grid-crop', 'remove-bg', 'combine', 'image-compare',
   'frame-extractor', 'frame-pair',
   'upload',
   // v1.2.8 工具节点 (循环器 / 从合集获取)

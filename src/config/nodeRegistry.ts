@@ -36,10 +36,10 @@ export const NODE_REGISTRY: NodeMeta[] = [
   { type: 'storyboard-grid', label: '分镜网格', category: 'special', description: '分镜九宫格布局', icon: 'LayoutGrid', color: 'indigo', hidden: true },
 
   // ========== Utility 工具节点(9) ==========
-  // 其中 6 个暂时隐藏: drawing-board / browser / image-compare / frame-extractor / remove-bg / upscale
+  // 其中 5 个暂时隐藏: drawing-board / browser / frame-extractor / remove-bg / upscale
   { type: 'drawing-board', label: '画板', category: 'utility', description: '手绘 / 涂抹', icon: 'Pencil', color: 'orange', hidden: true },
   { type: 'browser', label: '浏览器', category: 'utility', description: '网页内嵌', icon: 'Globe2', color: 'orange', hidden: true },
-  { type: 'image-compare', label: '图片对比', category: 'utility', description: '前后对比', icon: 'GitCompare', color: 'orange', hidden: true },
+  { type: 'image-compare', label: '图像对比', category: 'utility', description: '双图滑杆 / 并排 / 叠加 / 热力 / 聚焦对比', icon: 'GitCompare', color: 'orange' },
   { type: 'frame-extractor', label: '抽帧', category: 'utility', description: '视频抽帧', icon: 'Scissors', color: 'orange', hidden: true },
   // 首尾帧获取 (v1.2.7): 输入视频节点 → 运行后抽取首帧/尾帧 → 双 image 输出
   { type: 'frame-pair', label: '首尾帧获取', category: 'utility', description: '从视频抽取首帧与尾帧，双输出可分别接下游', icon: 'Film', color: 'orange' },

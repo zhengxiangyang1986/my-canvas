@@ -7,7 +7,14 @@ async function postOp<T = any>(path: string, body: any): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const data = await r.json();
+  const text = await r.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    const isHtml = /^\s*</.test(text || '');
+    throw new Error(isHtml ? '图像处理接口未就绪，请重启后端服务后重试' : `接口返回异常: ${text.slice(0, 120)}`);
+  }
   if (!r.ok || !data.success) throw new Error(data?.error || `HTTP ${r.status}`);
   return data.data;
 }
@@ -53,6 +60,31 @@ export const opGridCrop = (
 
 export const opCombine = (imageUrls: string[], direction: 'horizontal' | 'vertical') =>
   postOp<{ imageUrl: string }>('combine', { imageUrls, direction });
+
+export const opCompare = (
+  imageAUrl: string,
+  imageBUrl: string,
+  mode: 'slider' | 'side-by-side' | 'overlay' | 'blink' | 'heatmap' | 'focus',
+  options?: {
+    align?: 'contain' | 'cover' | 'fill';
+    split?: number;
+    opacity?: number;
+    threshold?: number;
+  },
+) =>
+  postOp<{
+    imageUrl: string;
+    metrics: {
+      width: number;
+      height: number;
+      imageA: { width: number; height: number };
+      imageB: { width: number; height: number };
+      meanDiff: number;
+      maxDiff: number;
+      changedRatio: number;
+      threshold: number;
+    };
+  }>('compare', { imageAUrl, imageBUrl, mode, ...(options || {}) });
 
 export const opRemoveBg = (imageUrl: string) =>
   postOp<{ imageUrl: string; warning?: string }>('remove-bg', { imageUrl });

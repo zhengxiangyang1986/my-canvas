@@ -25,7 +25,7 @@ const EXECUTABLE_NODE_TYPES = new Set<string>([
   'video', 'seedance', 'audio', 'llm', 'runninghub', 'runninghub-wallet',
     // v1.2.10.1: RH 工具节点
     'rh-tools',
-  'resize', 'upscale', 'grid-crop', 'remove-bg', 'combine',
+  'resize', 'upscale', 'grid-crop', 'remove-bg', 'combine', 'image-compare',
   'frame-extractor', 'frame-pair',
   'upload',
   // v1.2.8 循环器 / 从合集获取
