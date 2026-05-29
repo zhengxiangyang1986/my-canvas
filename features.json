@@ -1,7 +1,7 @@
 {
   "$schema": "本文件为 T8-penguin-canvas 节点清单防丢失锁,任何节点删减都需要在 roadmap.md 中说明并更新本文件。",
-  "version": "1.6.6",
-  "lastUpdated": "2026-05-29-v1.6.6-canvas-g-nearest-node",
+  "version": "1.6.8",
+  "lastUpdated": "2026-05-29-v1.6.8-yyh-light-watermark",
   "packaging": {
     "description": "Electron NSIS 桌面端打包链路(v1.2.1 起标准化, 严禁未明确指令主动打包)。完整产物拓扑: app.asar(electron/{main,loader,preload}.cjs + node_modules) + app.asar.unpacked(node_modules/sharp + @img) + resources/backend-enc/*.t8c(extraResources, asar 外) + resources/frontend(extraResources, asar 外)。前端版本号由 vite define 注入 __APP_VERSION__、Sidebar 左下角自动同步。",
     "scripts": {
@@ -16,9 +16,9 @@
       "T8PC_FRONTEND_DIST": "打包模式 = path.join(process.resourcesPath, 'frontend'); 开发模式 = <project>/dist",
       "T8PC_RES": "打包模式 = process.resourcesPath; 开发模式 = <project>"
     },
-    "version": "1.6.6",
-    "semverVersion": "1.6.6",
-    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.6.6：完成肖像大师 roadmap 第三/第四阶段，并补充画布空白处 G 定位当前视野最近节点快捷键。已通过 npm run build；本次未重新打包 Electron。",
+    "version": "1.6.8",
+    "semverVersion": "1.6.8",
+    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.6.8：幽游白书主题浅色水印独立化，深色继续使用终端面板式水印，浅色改用透明底线稿/HUD 水印，并降低浅色雷达线条和组水印压迫感。已通过 npm run build；本次未重新打包 Electron。",
     "installer": "本次未打包 Electron；最近一次安装包为 dist_electron/T8-PenguinCanvas-Setup-1.5.5.exe (NSIS, 108.96 MB)",
     "checklist": [
       "运行 npm run encrypt 前确认已 npm install bytenode 且使用 Electron 内置 Node",
@@ -44,7 +44,7 @@
     }
   },
   "themes": {
-    "description": "主题模板体系：内置科技风 / 像素糖果风 / OP 风格 / RH 风格 / 火影忍者风格 / EVA风格六套模板 × 浅色/深色模式，由 zustand theme store 持久化，data-theme-style + data-theme-mode + data-theme-visual 注入 html 根；新增节点应使用 ThemeToken CSS 变量与通用 t8-* 样式，避免逐节点硬编码主题。",
+    "description": "主题模板体系：内置科技风 / 像素糖果风 / OP 风格 / RH 风格 / 火影忍者风格 / EVA风格 / 幽游白书风格七套模板 × 浅色/深色模式，由 zustand theme store 持久化，data-theme-style + data-theme-mode + data-theme-visual 注入 html 根；新增节点应使用 ThemeToken CSS 变量与通用 t8-* 样式，避免逐节点硬编码主题。",
     "templateSystem": {
       "schema": "t8-theme-template",
       "version": 2,
@@ -71,8 +71,9 @@
         "自定义模板导入时必须通过 validateTheme/后端 normalizeTemplate，过滤未知枚举、过长字段和非法音乐 URL",
         "ThemeMusicToggle 与 ReactFlow Controls 必须同置于 .t8-control-rail，由全局变量统一定位和堆叠；主题 CSS 只能覆盖尺寸、颜色和视觉样式，不得分别硬编码 left/top/bottom 造成喇叭与缩放条漂移",
         "画布背景水印必须放在 .t8-canvas-shell::before/::after 背景层，z-index:0 且 pointer-events:none；ReactFlow 节点、边、浮层和 GroupBox 内容必须盖住水印，不能让装饰穿透到素材预览或画板内容上方",
+        "强风格官方主题可为 light/dark 分别提供水印资产；若深色水印包含黑底终端、警告面板或厚重贴片，浅色模式必须改用透明底线稿 / 印章 / HUD 版本，避免浅色画布出现突兀深色块",
         "框选/节点右键菜单、空白右键快速添加菜单、拖线候选菜单和选中节点右上角 RUN/关闭浮动条都属于全局主题控件，必须使用 t8-context-menu / t8-node-action-bar 语义类和 visuals.style 作为视觉判断来源，禁止仅按 legacyStyle=像素/科技分支导致 OP、火影、EVA 等主题残留白底或绿色按钮",
-        "全局菜单新增动作时必须检查 light/dark 与六套官方主题的可读性；小图标和菜单图标仍需固定尺寸，避免 OP/像素风胶囊按钮把资源库、图像对比、批量下载等入口撑大"
+        "全局菜单新增动作时必须检查 light/dark 与七套官方主题的可读性；小图标和菜单图标仍需固定尺寸，避免 OP/像素风胶囊按钮把资源库、图像对比、批量下载等入口撑大"
       ],
       "music": {
         "defaultMuted": true,
@@ -91,7 +92,8 @@
           "rh-style": "rh-tide.mp3",
           "rh-hidden": "rh-hidden-saya.mp3",
           "naruto-style": "naruto-shinsei-gyakuten.mp3",
-          "eva-style": "eva-decisive-battle.mp3"
+          "eva-style": "eva-decisive-battle.mp3",
+          "yyh-style": "yyh-unbalanced-kiss-piano.mp3"
         },
         "rule": "主题音乐默认静音，通常只在用户主动点击播放按钮后播放；RH 主题隐藏模式是唯一例外，会自动切换隐藏音乐并解除静音。模板编辑器支持上传替换，导出模板可携带 data:audio/*。"
       }
@@ -188,6 +190,19 @@
           "headerMark": "EVA"
         },
         "music": "eva-decisive-battle.mp3"
+      },
+      "yyh": {
+        "label": "幽游白书风格",
+        "description": "幽游白书灵界侦探视觉模板：暗紫青绿终端、灵丸能量、霓虹灵界地图、战斗卡片、REI MAP 小地图与灵界符号水印；浅色/深色都要保证工具属性、长文本、素材预览和全局菜单可读。",
+        "default": false,
+        "visuals": {
+          "style": "yyh",
+          "iconPack": "yyh",
+          "canvasPattern": "spirit-map",
+          "nodeFrame": "spirit-case",
+          "headerMark": "REI GUN"
+        },
+        "music": "yyh-unbalanced-kiss-piano.mp3"
       }
     },
     "defaultStyle": "pixel",
@@ -1342,6 +1357,27 @@
         "G 快捷键复用 Z 全貌视图的防误触边界：输入框、节点、弹窗、侧边栏、工具栏、右键菜单聚焦时不会触发；Ctrl+G 打组逻辑保持不变。",
         "定位时保持当前 zoom 的自然感并限制在 0.55-1.15 之间，节点居中后添加一次临时高亮，不写入节点 data，避免触发自动保存或跨画布同步副作用。",
         "快捷键面板、README 和 features.json shortcuts 同步新增 G 说明。"
+      ]
+    },
+    "phase89": {
+      "label": "幽游白书官方主题 (v1.6.7)",
+      "status": "complete",
+      "items": [
+        "新增第七套官方主题「幽游白书风格」，以灵界侦探、灵丸能量、霓虹灵界地图、暗紫青绿终端和战斗卡片为核心视觉母题。",
+        "主题枚举、内置模板、后端主题白名单、主题编辑器、默认音乐、顶栏品牌、侧栏图标、MiniMap、GroupBox 和全局菜单全部接入 yyh 视觉分支。",
+        "新增 src/styles/theme-yyh.css，覆盖节点外壳、节点标题、输入框、按钮、端口、连线、选中态、资源库、右键菜单、NodeActionBar、SHIFT 灵剑剪线和 light/dark legacy internal controls。",
+        "公开主题设计规范同步补充 yyh / spirit-map / spirit-case / spirit-gun，幽游白书默认音乐改为 yyh-unbalanced-kiss-piano.mp3；后续官方主题必须同步覆盖全局 UI 表面而不是只换颜色。"
+      ]
+    },
+    "phase90": {
+      "label": "幽游白书浅色水印独立化 (v1.6.8)",
+      "status": "complete",
+      "items": [
+        "新增 src/assets/theme-yyh-wordmark-light.svg，作为幽游白书浅色模式专用透明底线稿 / HUD 水印，避免复用深色终端面板导致浅色画布底部出现沉重贴片。",
+        "src/styles/theme-yyh.css 新增 --yyh-wordmark-light-image 与 --yyh-wordmark-active-image，light/dark 自动切换水印；深色继续使用 theme-yyh-wordmark.svg，浅色使用轻量线稿。",
+        "浅色模式下同步降低画布雷达线条、主水印、GroupBox 水印与组内装饰层透明度，让节点和连线保持第一视觉层级。",
+        "README、features.json 与公开主题设计规范同步补充：强风格主题允许浅色 / 深色独立水印，新增主题必须分别检查 light/dark 水印可读性和压迫感。",
+        "公开版本同步到 1.6.8：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 与 docs/theme-design-guide.md 同步；skill.md 仅本地更新，继续禁止推送 GitHub。"
       ]
     }
   },

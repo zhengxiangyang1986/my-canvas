@@ -70,6 +70,15 @@ export default function DeletableEdge(props: EdgeProps) {
         markerEnd={markerEnd}
         interactionWidth={24}
       />
+      <path
+        className="t8-edge-yyh-red-segment"
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={0}
+        pointerEvents="none"
+        aria-hidden="true"
+      />
       {/* 透明的加宽 hit area,捕捉鼠标 hover (BaseEdge 的 interactionWidth 已自带,这里再补一层,确保事件有响应) */}
       <path
         d={edgePath}

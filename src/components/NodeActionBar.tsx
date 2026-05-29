@@ -46,6 +46,7 @@ const ACTION_COLORS: Record<string, { run: string; stop: string; close: string }
   rh: { run: '#9cff4d', stop: '#ff9f43', close: '#ff345f' },
   naruto: { run: '#f4511e', stop: '#f59e0b', close: '#d11d1d' },
   eva: { run: '#78ff4d', stop: '#ff9d00', close: '#ff3046' },
+  yyh: { run: '#52ff9a', stop: '#ffb84d', close: '#ff4f7b' },
 };
 
 const NodeActionBar = () => {

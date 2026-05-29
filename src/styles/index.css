@@ -6,6 +6,7 @@
 @import './theme-rh.css';
 @import './theme-naruto.css';
 @import './theme-eva.css';
+@import './theme-yyh.css';
 
 @tailwind base;
 @tailwind components;
@@ -102,6 +103,13 @@ html[data-theme-visual] .t8-canvas-shell::after,
 
 .t8-canvas-shell .react-flow__node {
   isolation: isolate;
+  overflow: visible !important;
+}
+
+.t8-canvas-shell .react-flow__node > .react-flow__handle,
+.t8-canvas-shell .react-flow__node .react-flow__handle {
+  z-index: 60 !important;
+  pointer-events: all;
 }
 
 html[data-theme-visual] .t8-canvas-shell .react-flow__controls,
