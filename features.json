@@ -1,7 +1,7 @@
 {
   "$schema": "本文件为 T8-penguin-canvas 节点清单防丢失锁,任何节点删减都需要在 roadmap.md 中说明并更新本文件。",
-  "version": "1.7.9",
-  "lastUpdated": "2026-06-01-v1.7.9-workflow-text-resize-electron",
+  "version": "1.8.0",
+  "lastUpdated": "2026-06-01-v1.8.0-advanced-api-platform-roadmap-electron",
   "packaging": {
     "description": "Electron NSIS 桌面端打包链路(v1.2.1 起标准化, 严禁未明确指令主动打包)。完整产物拓扑: app.asar(electron/{main,loader,preload}.cjs + node_modules) + app.asar.unpacked(node_modules/sharp + @img) + resources/backend-enc/*.t8c(extraResources, asar 外) + resources/frontend(extraResources, asar 外)。前端版本号由 vite define 注入 __APP_VERSION__、Sidebar 左下角自动同步。",
     "scripts": {
@@ -16,10 +16,10 @@
       "T8PC_FRONTEND_DIST": "打包模式 = path.join(process.resourcesPath, 'frontend'); 开发模式 = <project>/dist",
       "T8PC_RES": "打包模式 = process.resourcesPath; 开发模式 = <project>"
     },
-    "version": "1.7.9",
-    "semverVersion": "1.7.9",
-    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.7.9：新增工作流资源库模板，支持选中节点片段和内部连线保存到资源库、按分类管理、拓扑预览和插入当前画布；文本节点四角拖拽改为自由宽高缩放，同时保持输出端口与连线贴合右侧中点。公开版本同步并按规范打包 Electron。",
-    "installer": "已按 npm run dist 打包 Electron；最终安装包为 dist_electron/T8-PenguinCanvas-Setup-1.7.9.exe (NSIS, 129.21 MB)，并通过 win-unpacked 10 秒启动冒烟。",
+    "version": "1.8.0",
+    "semverVersion": "1.8.0",
+    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.8.0：补充扩展 API 平台融合路线，明确 ModelScope、火山引擎、本地 ComfyUI、即梦 Seedance 2.0 CLI 与 OpenAI 兼容图像/视频/LLM 的高级可选接入原则、设置入口、节点融合、后端适配层、数据结构与分阶段开发计划。默认主流程仍保持贞贞工坊 / RunningHub / LLM 独立 Key 不变。",
+    "installer": "已按 npm run dist 打包 Electron；最终安装包为 dist_electron/T8-PenguinCanvas-Setup-1.8.0.exe (NSIS, 129.21 MB)，并通过 win-unpacked 10 秒启动冒烟。",
     "checklist": [
       "运行 npm run encrypt 前确认已 npm install bytenode 且使用 Electron 内置 Node",
       "backend/src/ 任何文件修改后必须重新 npm run encrypt 再打包",
@@ -1638,6 +1638,19 @@
         "公开版本同步到 1.7.9：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 同步；skill.md 仅本地更新，继续禁止推送 GitHub；本次按规范打包 Electron。",
         "验证：node --test tests/*.test.ts、node --check backend/src/routes/resources.js、npm run build 通过。"
       ]
+    },
+    "phase112": {
+      "label": "扩展 API 平台融合路线 (v1.8.0)",
+      "status": "planned",
+      "items": [
+        "roadmap.md 新增「扩展 API 平台融合路线（参考 Infinite-Canvas）」，把 ModelScope、火山引擎、本地 ComfyUI、即梦 Seedance 2.0 CLI、OpenAI 兼容图像/视频/LLM 作为高级可选扩展平台规划，而不是主侧栏新增大入口。",
+        "设置入口规范为 API 设置页「分类独立 API Key【可选】」下方的「扩展 API 平台【高级/可选】」折叠区，折叠态只显示启用平台、已配置 Key 与 ComfyUI/即梦 CLI 可用状态，未配置不影响主流程。",
+        "节点融合规范为现有图像、视频、SD2.0、LLM 节点的「更多平台/高级来源」小折叠区；旧画布缺省视为 zhenzhen，跨画布发送/导入保留 providerSource/providerId/providerModel/providerParams。",
+        "后端适配规范拆为 backend/src/providers/registry.js、mediaResolver.js、openaiCompatible.js、modelscope.js、volcengine.js、comfyui.js、jimengCli.js，避免把新平台逻辑继续堆进 routes/proxy.js。",
+        "输出协议要求所有扩展平台最终归一为当前 OutputNode、资源库、自动保存、节点发送和 Loop 可识别的 image/video/audio/text/raw/taskId 结构；媒体输入统一交给 media resolver 转换为 URL、base64、asset 或本地路径。",
+        "开发分为 Phase A-F：设置与数据模型、Adapter 骨架与媒体解析、OpenAI 兼容与 ModelScope、火山与即梦 CLI、本地 ComfyUI 工作流、体验收口与回归。",
+        "公开版本同步到 1.8.0：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 同步；skill.md 仅本地更新，继续禁止推送 GitHub；本次按规范打包 Electron。"
+      ]
     }
   },
   "categories": {
@@ -2271,6 +2284,44 @@
           ]
         }
       }
+    },
+    "advancedProviders": {
+      "label": "扩展 API 平台【高级/可选】",
+      "status": "roadmap",
+      "since": "v1.8.0",
+      "placement": "API 设置页中位于「分类独立 API Key【可选】」之后、文件自动保存路径之前，默认折叠；未配置时不影响主流程。",
+      "principles": [
+        "默认不改变贞贞工坊 / RunningHub / LLM 独立 Key 与分类 Key fallback 链路。",
+        "只有用户主动展开、配置并在节点里选择扩展平台时才启用。",
+        "设置保存和节点调用解耦，节点仅保存 providerSource/providerId/providerModel/providerParams。",
+        "所有扩展平台输出必须归一化到现有 OutputNode、资源库、自动保存、节点发送和 Loop 可识别的协议。",
+        "Key、火山 AK/SK、CLI 路径和本地服务地址必须后端保存、脱敏展示并避免写入日志。"
+      ],
+      "protocols": [
+        "openai-compatible",
+        "modelscope",
+        "volcengine",
+        "comfyui",
+        "jimeng-cli"
+      ],
+      "plannedBackend": [
+        "backend/src/providers/registry.js",
+        "backend/src/providers/mediaResolver.js",
+        "backend/src/providers/openaiCompatible.js",
+        "backend/src/providers/modelscope.js",
+        "backend/src/providers/volcengine.js",
+        "backend/src/providers/comfyui.js",
+        "backend/src/providers/jimengCli.js"
+      ],
+      "plannedPhases": [
+        "Phase A: 设置与数据模型、折叠 UI、脱敏与校验测试。",
+        "Phase B: Adapter 骨架、统一 media resolver 与 provider test endpoint。",
+        "Phase C: OpenAI 兼容与 ModelScope，先接图像和 LLM。",
+        "Phase D: 火山引擎与即梦 Seedance CLI。",
+        "Phase E: 本地 ComfyUI 工作流。",
+        "Phase F: 错误文案、输出协议和回归体验收口。"
+      ],
+      "reference": "roadmap.md::扩展 API 平台融合路线（参考 Infinite-Canvas）"
     },
     "fileSavePath": {
       "label": "文件自动保存路径",
