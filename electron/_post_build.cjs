@@ -201,6 +201,7 @@ function main() {
   checkFrontendAsset('naruto-shinsei-gyakuten-', '.mp3');
   checkFrontendAsset('eva-decisive-battle-', '.mp3');
   checkFrontendAsset('yyh-unbalanced-kiss-piano-', '.mp3');
+  checkFrontendAsset('yyh-hidden-tonight-', '.mp3');
 
   console.log('\n[3] 清除可能混入的明文后端源码:');
   nukePlainBackend();

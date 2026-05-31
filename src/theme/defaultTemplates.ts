@@ -9,6 +9,7 @@ export const rhHiddenThemeMusicUrl = new URL('../assets/theme-music/rh-hidden-sa
 export const narutoThemeMusicUrl = new URL('../assets/theme-music/naruto-shinsei-gyakuten.mp3', import.meta.url).href;
 export const evaThemeMusicUrl = new URL('../assets/theme-music/eva-decisive-battle.mp3', import.meta.url).href;
 export const yyhThemeMusicUrl = new URL('../assets/theme-music/yyh-unbalanced-kiss-piano.mp3', import.meta.url).href;
+export const yyhHiddenThemeMusicUrl = new URL('../assets/theme-music/yyh-hidden-tonight.mp3', import.meta.url).href;
 
 export const DEFAULT_THEME_TEMPLATE_ID = 'pixel-candy';
 export const TECH_TEMPLATE_ID = 'tech-default';
@@ -723,9 +724,12 @@ export const BUILT_IN_THEME_TEMPLATES: ThemeTemplate[] = [
       preset: 'spirit-gun',
       source: 'url',
       url: yyhThemeMusicUrl,
+      hiddenTitle: '今夜属于彼此',
+      hiddenUrl: yyhHiddenThemeMusicUrl,
+      hiddenVolume: 0.18,
       volume: 0.16,
       bpm: 138,
-      copyrightNote: '幽游白书风格默认音乐文件，可在主题模板中上传替换。公开分发前请确认音乐授权边界。',
+      copyrightNote: '幽游白书风格默认音乐文件；肖像大师隐藏模式会自动切换到隐藏主题音乐，可在主题模板中上传替换普通主题音乐。公开分发前请确认音乐授权边界。',
     },
     modes: { dark: { tokens: yyhDark }, light: { tokens: yyhLight } },
   },

@@ -1,7 +1,7 @@
 {
   "$schema": "本文件为 T8-penguin-canvas 节点清单防丢失锁,任何节点删减都需要在 roadmap.md 中说明并更新本文件。",
-  "version": "1.7.5",
-  "lastUpdated": "2026-05-31-v1.7.5-node-id-linking",
+  "version": "1.7.6",
+  "lastUpdated": "2026-05-31-v1.7.6-yyh-hidden-music",
   "packaging": {
     "description": "Electron NSIS 桌面端打包链路(v1.2.1 起标准化, 严禁未明确指令主动打包)。完整产物拓扑: app.asar(electron/{main,loader,preload}.cjs + node_modules) + app.asar.unpacked(node_modules/sharp + @img) + resources/backend-enc/*.t8c(extraResources, asar 外) + resources/frontend(extraResources, asar 外)。前端版本号由 vite define 注入 __APP_VERSION__、Sidebar 左下角自动同步。",
     "scripts": {
@@ -16,9 +16,9 @@
       "T8PC_FRONTEND_DIST": "打包模式 = path.join(process.resourcesPath, 'frontend'); 开发模式 = <project>/dist",
       "T8PC_RES": "打包模式 = process.resourcesPath; 开发模式 = <project>"
     },
-    "version": "1.7.5",
-    "semverVersion": "1.7.5",
-    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.7.5：新增画布级 NodeID 体系，每个画布内节点独立递增编号，删除不回退；拖线菜单支持“发送到ID”自动连线，顶部工具栏支持按 NodeID 查找居中；复制、粘贴、导入、节点片段发送和跨画布素材发送都会按目标画布编号规则重新分配。NodeID 角标改为节点外框右上角悬浮徽标，避免遮挡节点名称。本次未重新打包 Electron。",
+    "version": "1.7.6",
+    "semverVersion": "1.7.6",
+    "versionNote": "v1.3.0 起统一采用 semver 三段阶段号 x.y.z；当前源码为 v1.7.6：幽游白书肖像大师隐藏模式新增专用内置音乐 yyh-hidden-tonight.mp3，隐藏模式开启时 ThemeMusicToggle 会自动切换并解除静音，普通幽游白书主题音乐继续使用 yyh-unbalanced-kiss-piano.mp3。本次只推源码和前端资源，不打包 Electron。",
     "installer": "本次未打包 Electron；最近一次安装包为 dist_electron/T8-PenguinCanvas-Setup-1.5.5.exe (NSIS, 108.96 MB)",
     "checklist": [
       "运行 npm run encrypt 前确认已 npm install bytenode 且使用 Electron 内置 Node",
@@ -98,9 +98,10 @@
           "rh-hidden": "rh-hidden-saya.mp3",
           "naruto-style": "naruto-shinsei-gyakuten.mp3",
           "eva-style": "eva-decisive-battle.mp3",
-          "yyh-style": "yyh-unbalanced-kiss-piano.mp3"
+          "yyh-style": "yyh-unbalanced-kiss-piano.mp3",
+          "yyh-hidden": "yyh-hidden-tonight.mp3"
         },
-        "rule": "主题音乐默认静音，通常只在用户主动点击播放按钮后播放；RH 鸭鸭隐藏模式和幽游白书肖像大师隐藏模式会自动切换隐藏音乐并解除静音。模板编辑器支持上传替换，导出模板可携带 data:audio/*。"
+        "rule": "主题音乐默认静音，通常只在用户主动点击播放按钮后播放；RH 鸭鸭隐藏模式会自动切换 rh-hidden-saya.mp3，幽游白书肖像大师隐藏模式会自动切换 yyh-hidden-tonight.mp3，二者都会解除静音。模板编辑器支持上传替换，导出模板可携带 data:audio/*。"
       }
     },
     "styles": {
@@ -207,7 +208,7 @@
           "nodeFrame": "spirit-case",
           "headerMark": "REI GUN"
         },
-        "music": "yyh-unbalanced-kiss-piano.mp3"
+        "music": "yyh-unbalanced-kiss-piano.mp3；肖像大师隐藏模式自动切换 yyh-hidden-tonight.mp3 并解除静音播放"
       }
     },
     "defaultStyle": "pixel",
@@ -1395,8 +1396,8 @@
         "幽游白书主题下选中肖像大师节点后，长按顶部 RUN 3 秒切换隐藏模式；隐藏模式开启后肖像大师节点、RUN 浮动条、输出节点和相关连线统一进入粉色发光视觉。",
         "隐藏视觉状态与高级词条安全阻断解耦：即使基础人物触发安全屏蔽，节点本体、编辑器、端口和连线仍保持粉色隐藏模式，只是不拼入隐藏高级 prompt。",
         "隐藏高级 prompt 只在幽游白书隐藏模式下拼入输出；若基础人物选择包含少女、少年、学生、校园、童话年轻角色等未成年/年轻化信号，会保守阻断隐藏高级词条输出，只保留公开 prompt。",
-        "ThemeMusicToggle 扩展隐藏音乐通道，幽游白书隐藏模式开启时可自动解除静音并切换隐藏音乐；当前先复用主题音乐通道，等待后续提供专用隐藏曲目。",
-        "已通过 npm run build；本次未打包 Electron，skill.md 未改动。"
+        "ThemeMusicToggle 扩展隐藏音乐通道，幽游白书隐藏模式开启时可自动解除静音并切换到专用隐藏曲目 yyh-hidden-tonight.mp3；普通主题音乐仍使用 yyh-unbalanced-kiss-piano.mp3。",
+        "已通过 npm run build；本阶段未打包 Electron。"
       ]
     },
     "phase92": {
@@ -1515,6 +1516,16 @@
         "节点角标统一显示在 ReactFlow 节点外框右上角，使用 .t8-node-serial-badge 悬浮徽标，不占用节点标题行，避免不同主题或长标题下遮挡节点名称。",
         "拖线候选菜单顶部新增“发送到ID”，用户输入目标 NodeID 后自动创建兼容连线；无效数字、节点不存在、连接自身、重复连线和端口类型不兼容都会给出失败提示。",
         "顶部工具栏新增“查找 NodeID”按钮，输入编号后画布自动居中到对应节点并触发节点高亮脉冲，便于大画布快速定位。"
+      ]
+    },
+    "phase103": {
+      "label": "幽游白书肖像大师隐藏音乐 (v1.7.6)",
+      "status": "complete",
+      "items": [
+        "幽游白书主题新增内置隐藏曲目 src/assets/theme-music/yyh-hidden-tonight.mp3，普通主题音乐仍使用 yyh-unbalanced-kiss-piano.mp3。",
+        "defaultTemplates 的 YYH 模板声明 hiddenTitle / hiddenUrl / hiddenVolume，肖像大师隐藏模式触发 yyhPortraitIds 后 ThemeMusicToggle 会自动切换隐藏音乐并解除静音。",
+        "electron/_post_build.cjs 增加 yyh-hidden-tonight-*.mp3 前端资源校验，确保正式打包时不会漏带该隐藏音乐。",
+        "公开版本同步到 1.7.6：package.json、package-lock.json、vite.config.ts/js、electron/main.cjs、backend/src/config.js APP_VERSION、features.json、README.md 同步；skill.md 仅本地更新，继续禁止推送 GitHub。"
       ]
     }
   },
