@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type DragEvent as ReactDragEvent } from 'react';
 import {
   ReactFlow,
   Background,
@@ -58,6 +58,14 @@ import {
   type InstantiatedSendNodeFragment,
   type SendNodeFragment,
 } from '../utils/sendNodeFragment';
+import {
+  assignFreshNodeSerials,
+  findNodeBySerialId,
+  getNodeSerialId,
+  normalizeCanvasNodeSerials,
+  parseNodeSerialInput,
+} from '../utils/nodeSerialIds';
+import { resolveConnectionByNodeSerialId } from '../utils/connectByNodeSerialId';
 import {
   collectMaterialSetBucketsFromData,
   isMaterialSetKind,
@@ -181,6 +189,27 @@ const SPECIFIC_NODES: Record<string, any> = {
   // Output (1) - 输出素材(文本/图像/视频/音频 预览 + 文本双击编辑)
   output: OutputNode,
 };
+
+function NodeSerialBadge({ data }: { data: unknown }) {
+  const serialId = parseNodeSerialInput((data as any)?.nodeSerialId);
+  if (!serialId) return null;
+  return (
+    <span className="t8-node-serial-badge" title={`NodeID #${serialId}`}>
+      #{serialId}
+    </span>
+  );
+}
+
+function withNodeSerialBadge(Component: ComponentType<any>): ComponentType<any> {
+  const WrappedNode = (props: any) => (
+    <>
+      <Component {...props} />
+      <NodeSerialBadge data={props?.data} />
+    </>
+  );
+  WrappedNode.displayName = `NodeSerialBadge(${Component.displayName || Component.name || 'Node'})`;
+  return WrappedNode;
+}
 
 // 节点初始 data(用于区分共享组件的 kind/preset/model 等)
 const INITIAL_DATA: Record<string, Record<string, any>> = {
@@ -603,11 +632,11 @@ function centerOfMaterialNodes(nodes: Node[]): { x: number; y: number } | null {
 
 // 把所有节点类型都注册到对应组件(已实现的用业务组件,其余用 Placeholder)
 const nodeTypes = NODE_REGISTRY.reduce<Record<string, any>>((acc, m) => {
-  acc[m.type] = SPECIFIC_NODES[m.type] || PlaceholderNode;
+  acc[m.type] = withNodeSerialBadge(SPECIFIC_NODES[m.type] || PlaceholderNode);
   return acc;
 }, {});
 // 节点组容器(不在 NODE_REGISTRY 中,作为独立的视觉容器节点类型)
-nodeTypes.groupBox = GroupBoxNode;
+nodeTypes.groupBox = withNodeSerialBadge(GroupBoxNode);
 
 // SHIFT 批量移线 phantom 节点: 拖拽期间充当边的临时锐点,跟随鼠标移动
 function BulkPhantomNode() {
@@ -849,8 +878,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   const [loaded, setLoaded] = useState(false);
   const [loadedCanvasId, setLoadedCanvasId] = useState<string | null>(null);
   const saveTimersByCanvasRef = useRef<Map<string, number>>(new Map());
-  const pendingSaveByCanvasRef = useRef<Map<string, { nodes: Node[]; edges: Edge[]; snapshot: string }>>(new Map());
+  const pendingSaveByCanvasRef = useRef<Map<string, { nodes: Node[]; edges: Edge[]; snapshot: string; nextNodeSerialId: number }>>(new Map());
   const lastSavedByCanvasRef = useRef<Map<string, string>>(new Map());
+  const nextNodeSerialIdRef = useRef(1);
   const allowEmptySaveCanvasIdsRef = useRef<Set<string>>(new Set());
 
   // 选中节点 / 剪贴板
@@ -878,6 +908,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   const connectionPanPointerRef = useRef<{ x: number; y: number } | null>(null);
   const [connectionPanModeActive, setConnectionPanModeActive] = useState(false);
   const [modelHelpOpen, setModelHelpOpen] = useState(false);
+  const altDragCloneRef = useRef<{
+    placeholderIds: Map<string, string>; // origId -> placeholderId
+  } | null>(null);
 
   const setConnectionPanMode = useCallback((enabled: boolean) => {
     connectionPanModeRef.current = enabled;
@@ -911,6 +944,12 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   useEffect(() => {
     edgesRef.current = edges;
   }, [edges]);
+
+  const assignActiveNodeSerials = useCallback((incomingNodes: Node[], existingNodes?: Node[]) => {
+    const result = assignFreshNodeSerials(incomingNodes, existingNodes || nodesRef.current, nextNodeSerialIdRef.current);
+    nextNodeSerialIdRef.current = result.nextNodeSerialId;
+    return result.nodes;
+  }, []);
 
   const markManualNodeDeletion = useCallback(
     (nodeIds: Iterable<string>, beforeNodes?: Node[]) => {
@@ -1016,6 +1055,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   // 加载画布数据
   useEffect(() => {
     if (!activeId) {
+      nextNodeSerialIdRef.current = 1;
       setNodes([]);
       setEdges([]);
       setLoaded(false);
@@ -1034,16 +1074,33 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         const pendingSave = pendingSaveByCanvasRef.current.get(requestedCanvasId);
         const ns = pendingSave?.nodes || data.nodes || [];
         const es = pendingSave?.edges || data.edges || [];
+        const savedNextNodeSerialId = pendingSave?.nextNodeSerialId ?? data.nextNodeSerialId;
         // ⚡ 兑底补丁: 历史画布中可能存在 connectable=false 的旧 groupBox 节点
         // (5656721 事故期间创建的 group), 加载时强制打开可连接以恢复右侧聚合输出口
-        const fixedNs = ns.map((n: any) =>
+        const fixedNsBeforeSerials = ns.map((n: any) =>
           n.type === 'groupBox' && n.connectable === false
             ? { ...n, connectable: true }
             : n,
         );
+        const normalized = normalizeCanvasNodeSerials(fixedNsBeforeSerials, savedNextNodeSerialId);
+        nextNodeSerialIdRef.current = normalized.nextNodeSerialId;
+        const fixedNs = normalized.nodes;
         setNodes(fixedNs);
         setEdges(es);
-        lastSavedByCanvasRef.current.set(requestedCanvasId, JSON.stringify({ nodes: fixedNs, edges: es }));
+        const loadedSnapshot = JSON.stringify({
+          nodes: fixedNsBeforeSerials,
+          edges: es,
+          nextNodeSerialId: savedNextNodeSerialId || 1,
+        });
+        const normalizedSnapshot = JSON.stringify({
+          nodes: fixedNs,
+          edges: es,
+          nextNodeSerialId: normalized.nextNodeSerialId,
+        });
+        lastSavedByCanvasRef.current.set(
+          requestedCanvasId,
+          normalized.changed || normalizedSnapshot !== loadedSnapshot ? loadedSnapshot : normalizedSnapshot,
+        );
         allowEmptySaveCanvasIdsRef.current.delete(requestedCanvasId);
         histReset({ nodes: fixedNs, edges: es });
         setLoadedCanvasId(requestedCanvasId);
@@ -1052,6 +1109,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       .catch((e) => {
         if (cancelled || useCanvasStore.getState().activeId !== requestedCanvasId) return;
         console.error('加载画布失败', e);
+        nextNodeSerialIdRef.current = 1;
         setNodes([]);
         setEdges([]);
         histReset();
@@ -1094,6 +1152,17 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!activeId || !loaded || loadedCanvasId !== activeId) return;
+    if (altDragCloneRef.current) return;
+    if (nodes.some((node) => node.id === BULK_PHANTOM_ID || String(node.id || '').startsWith('_alt-ph-'))) return;
+    const normalized = normalizeCanvasNodeSerials(nodes, nextNodeSerialIdRef.current);
+    nextNodeSerialIdRef.current = Math.max(nextNodeSerialIdRef.current, normalized.nextNodeSerialId);
+    if (normalized.changed) {
+      setNodes(normalized.nodes);
+    }
+  }, [activeId, loaded, loadedCanvasId, nodes]);
+
   // nodes/edges 变化后压栈(节流防止拖拽中海量入栈)
   useEffect(() => {
     if (!loaded || loadedCanvasId !== activeId) return;
@@ -1108,7 +1177,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
     const persistEdges = edges.filter(
       (ed) => ed.source !== BULK_PHANTOM_ID && ed.target !== BULK_PHANTOM_ID
     );
-    const snapshot = JSON.stringify({ nodes: persistNodes, edges: persistEdges });
+    const nextNodeSerialId = nextNodeSerialIdRef.current;
+    const snapshot = JSON.stringify({ nodes: persistNodes, edges: persistEdges, nextNodeSerialId });
     const canvasIdForSave = activeId;
     const previousSnapshot = lastSavedByCanvasRef.current.get(canvasIdForSave) || '';
     if (snapshot === previousSnapshot) return;
@@ -1128,10 +1198,11 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
     pendingSaveByCanvasRef.current.set(canvasIdForSave, {
       nodes: persistNodes,
       edges: persistEdges,
+      nextNodeSerialId,
       snapshot,
     });
     const timer = window.setTimeout(async () => {
-      const payload = { nodes: persistNodes, edges: persistEdges, viewport: getViewport() };
+      const payload = { nodes: persistNodes, edges: persistEdges, viewport: getViewport(), nextNodeSerialId };
       try {
         await api.saveCanvasData(canvasIdForSave, payload, { allowEmpty: allowEmptySave });
         api.autoSaveCanvasData(canvasIdForSave, payload).catch((e) => {
@@ -1201,9 +1272,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         position: { x: finalPos.x, y: finalPos.y },
         data: { ...(INITIAL_DATA[type] || {}), ...(options?.data || {}) },
       };
-      setNodes((prev) => [...prev, newNode]);
+      setNodes((prev) => [...prev, ...assignActiveNodeSerials([newNode], prev)]);
     },
-    [screenToFlowPosition, nodes, getViewport, setCenter]
+    [screenToFlowPosition, nodes, getViewport, setCenter, assignActiveNodeSerials]
   );
 
   const createUploadNodesFromFiles = useCallback(
@@ -1282,7 +1353,10 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         data: createUploadDataFromItems(payload.kind, payload.items),
       })) as Node[];
 
-      setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...newNodes]);
+      setNodes((prev) => [
+        ...prev.map((n) => ({ ...n, selected: false })),
+        ...assignActiveNodeSerials(newNodes, prev),
+      ]);
       if (skipped > 0) {
         console.warn(`画布导入素材时跳过 ${skipped} 个不支持的文件`);
       }
@@ -1291,7 +1365,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       }
       return true;
     },
-    [screenToFlowPosition]
+    [screenToFlowPosition, assignActiveNodeSerials]
   );
 
   const getMaterialSetMergeCandidate = useCallback((ids: string[]): { kind: MaterialSetKind; items: MaterialSetItem[] } | null => {
@@ -1348,9 +1422,12 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         selected: true,
         data: materialSetItemsToData(candidate.kind, candidate.items),
       } as Node;
-      setNodes((prev) => [...prev.map((node) => ({ ...node, selected: false })), newNode]);
+      setNodes((prev) => [
+        ...prev.map((node) => ({ ...node, selected: false })),
+        ...assignActiveNodeSerials([newNode], prev),
+      ]);
     },
-    [getMaterialSetMergeCandidate, screenToFlowPosition],
+    [getMaterialSetMergeCandidate, screenToFlowPosition, assignActiveNodeSerials],
   );
 
   const getDownloadableItemsFromNodes = useCallback((ids: string[]): MediaItem[] => {
@@ -1506,10 +1583,14 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
 
         if (targetCanvasId === activeId) {
           const base = basePositionForActiveSend();
-          const instance = placeInstantiatedNodeFragment(
+          const placedInstance = placeInstantiatedNodeFragment(
             instantiateSendNodeFragment(fragment, nodesRef.current, base),
             nodesRef.current,
           );
+          const instance = {
+            ...placedInstance,
+            nodes: assignActiveNodeSerials(placedInstance.nodes, nodesRef.current),
+          };
           const focusCenter = centerOfMaterialNodes(instance.nodes);
           if (activeId && focusCenter) {
             const { zoom } = getViewport();
@@ -1527,12 +1608,16 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         }
 
         const data = await api.getCanvasData(targetCanvasId);
-        const targetNodes = (Array.isArray(data.nodes) ? data.nodes : []) as Node[];
+        const targetNodesRaw = (Array.isArray(data.nodes) ? data.nodes : []) as Node[];
+        const normalizedTarget = normalizeCanvasNodeSerials(targetNodesRaw, data.nextNodeSerialId);
+        const targetNodes = normalizedTarget.nodes;
         const targetEdges = (Array.isArray(data.edges) ? data.edges : []) as Edge[];
-        const instance = placeInstantiatedNodeFragment(
+        const placedInstance = placeInstantiatedNodeFragment(
           instantiateSendNodeFragment(fragment, targetNodes, basePositionForAppend(targetNodes)),
           targetNodes,
         );
+        const freshSerials = assignFreshNodeSerials(placedInstance.nodes, targetNodes, normalizedTarget.nextNodeSerialId);
+        const instance = { ...placedInstance, nodes: freshSerials.nodes };
         const focusCenter = centerOfMaterialNodes(instance.nodes);
         if (switchAfter && focusCenter) {
           pendingSendFocusRef.current = {
@@ -1545,6 +1630,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
           nodes: [...targetNodes, ...instance.nodes],
           edges: [...targetEdges, ...instance.edges],
           viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+          nextNodeSerialId: freshSerials.nextNodeSerialId,
         };
         await api.saveCanvasData(targetCanvasId, payload);
         api.autoSaveCanvasData(targetCanvasId, payload).catch(() => {});
@@ -1582,7 +1668,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
           sourceCanvasId: activeId,
           sourceNodeIds: bridgeSourceNodeIds,
         });
-        const focusCenter = centerOfMaterialNodes(newNodes);
+        const assignedNewNodes = assignActiveNodeSerials(newNodes, cleaned.nodes);
+        const focusCenter = centerOfMaterialNodes(assignedNewNodes);
         if (activeId && focusCenter) {
           const { zoom } = getViewport();
           pendingSendFocusRef.current = {
@@ -1592,7 +1679,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
           };
         }
         setEdges(cleaned.edges);
-        setNodes([...cleaned.nodes.map((node) => ({ ...node, selected: false })), ...newNodes]);
+        setNodes([...cleaned.nodes.map((node) => ({ ...node, selected: false })), ...assignedNewNodes]);
         setSendModal(null);
         logBus.success(
           `已发送 ${summarizeSendableMaterials(currentSend.materials)} 到当前画布${cleaned.removed ? `，已替换旧批次 ${cleaned.removed} 个节点` : ''}`,
@@ -1602,7 +1689,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       }
 
       const data = await api.getCanvasData(targetCanvasId);
-      const targetNodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const targetNodesRaw = Array.isArray(data.nodes) ? data.nodes : [];
+      const normalizedTarget = normalizeCanvasNodeSerials(targetNodesRaw as Node[], data.nextNodeSerialId);
+      const targetNodes = normalizedTarget.nodes;
       const targetEdges = Array.isArray(data.edges) ? data.edges : [];
       const cleaned = removeDuplicateSendBridgeNodes(
         targetNodes as Node[],
@@ -1617,7 +1706,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         sourceCanvasId: activeId,
         sourceNodeIds: bridgeSourceNodeIds,
       });
-      const focusCenter = centerOfMaterialNodes(newNodes);
+      const freshSerials = assignFreshNodeSerials(newNodes, cleaned.nodes as Node[], normalizedTarget.nextNodeSerialId);
+      const focusCenter = centerOfMaterialNodes(freshSerials.nodes);
       if (switchAfter && focusCenter) {
         pendingSendFocusRef.current = {
           canvasId: targetCanvasId,
@@ -1626,9 +1716,10 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         };
       }
       const payload = {
-        nodes: [...cleaned.nodes, ...newNodes],
+        nodes: [...cleaned.nodes, ...freshSerials.nodes],
         edges: cleaned.edges,
         viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+        nextNodeSerialId: freshSerials.nextNodeSerialId,
       };
       await api.saveCanvasData(targetCanvasId, payload);
       api.autoSaveCanvasData(targetCanvasId, payload).catch(() => {});
@@ -1640,7 +1731,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         '发送素材',
       );
     },
-    [activeId, basePositionForActiveSend, getViewport, loadCanvases, resolveSendMode, sendModal, setActive],
+    [activeId, assignActiveNodeSerials, basePositionForActiveSend, getViewport, loadCanvases, resolveSendMode, sendModal, setActive],
   );
 
   const handleSaveSendMaterialsToResource = useCallback(async () => {
@@ -1779,6 +1870,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         data: sanitize(n.data),
       } as Node;
     });
+    const assignedNewNodes = assignActiveNodeSerials(newNodes, nodes);
     // 内部边: source/target 都映射到新节点
     const newInternalEdges = cb.edges
       .map((e, idx) => {
@@ -1826,9 +1918,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       extraEdges = [...incoming, ...outgoing];
     }
     // 取消其他节点的选中,新粘贴节点设为选中
-    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...newNodes]);
+    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...assignedNewNodes]);
     setEdges((prev) => [...prev, ...newInternalEdges, ...extraEdges]);
-  }, [nodes]);
+  }, [nodes, assignActiveNodeSerials]);
 
   const handleDuplicate = useCallback(() => {
     handleCopy();
@@ -1859,6 +1951,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       nodes,
       edges,
       viewport: getViewport(),
+      nextNodeSerialId: nextNodeSerialIdRef.current,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1890,7 +1983,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
           if (!confirm(`导入将替换当前画布(${importedNodes.length} 个节点 / ${importedEdges.length} 条连线),是否继续?`)) {
             return;
           }
-          setNodes(importedNodes);
+          const normalized = normalizeCanvasNodeSerials(importedNodes, source.nextNodeSerialId);
+          nextNodeSerialIdRef.current = normalized.nextNodeSerialId;
+          setNodes(normalized.nodes);
           setEdges(importedEdges);
         } catch (err) {
           alert('导入失败:JSON 解析错误');
@@ -1908,9 +2003,12 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   const handleApplyTemplate = useCallback((tpl: CanvasTemplate) => {
     const built = tpl.build();
     // 偏移现有 nodes 数量,避免重叠
-    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...built.nodes.map((n) => ({ ...n, selected: true }))]);
+    setNodes((prev) => [
+      ...prev.map((n) => ({ ...n, selected: false })),
+      ...assignActiveNodeSerials(built.nodes.map((n) => ({ ...n, selected: true })), prev),
+    ]);
     setEdges((prev) => [...prev, ...built.edges]);
-  }, []);
+  }, [assignActiveNodeSerials]);
 
   // ===== 批量运行 =====
   // 通用: 在指定节点子集上拓扑排序 + 串行调 runBus
@@ -1986,10 +2084,6 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
   // 思路: dragStart 时在原位插入占位克隆(临时ID),用户拖动过程中原位看起来有节点不动;
   // dragStop 时做 ID 互换: 占位克隆 → 恢复原始ID(保留连线), 被拖走的原节点 → 分配新ID(sanitize)
   // 最终效果: 原节点留在原位(保留连线和数据), 新复制节点在拖放位置
-  const altDragCloneRef = useRef<{
-    placeholderIds: Map<string, string>; // origId -> placeholderId
-  } | null>(null);
-
   const onNodeDragStart = useCallback(
     (e: React.MouseEvent | MouseEvent, node: Node) => {
       altDragCloneRef.current = null;
@@ -2088,9 +2182,12 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         connectable: true,
       } as Node;
       // 插入到最前面,确保渲染顺序在底(配合 zIndex 负值)
-      setNodes((prev) => [groupNode, ...prev.map((n) => ({ ...n, selected: false }))]);
+      setNodes((prev) => [
+        ...assignActiveNodeSerials([groupNode], prev),
+        ...prev.map((n) => ({ ...n, selected: false })),
+      ]);
     },
-    [nodes]
+    [nodes, assignActiveNodeSerials]
   );
 
   // 监听 GroupBox 的执行请求 / 删除请求
@@ -2274,7 +2371,9 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       const newIdMap = new Map<string, string>(); // origId -> newCopyId
 
       setNodes((prev) => {
-        return prev.map((n) => {
+        const copyDrafts: Node[] = [];
+        const copyIds = new Set<string>();
+        const mapped = prev.map((n) => {
           // 占位克隆 → 恢复原始ID
           const restoreId = phToOrig.get(n.id);
           if (restoreId) {
@@ -2284,10 +2383,18 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
           if (origIds.has(n.id)) {
             const newId = `${n.type}-${stamp}-${newIdMap.size}-${Math.random().toString(36).slice(2, 5)}`;
             newIdMap.set(n.id, newId);
-            return { ...n, id: newId, selected: true, data: sanitize(n.data) };
+            const copyNode = { ...n, id: newId, selected: true, data: sanitize(n.data) } as Node;
+            copyDrafts.push(copyNode);
+            copyIds.add(newId);
+            return copyNode;
           }
           return n;
         });
+        if (copyDrafts.length === 0) return mapped;
+        const baseNodes = mapped.filter((n) => !copyIds.has(n.id));
+        const assignedCopies = assignActiveNodeSerials(copyDrafts, baseNodes);
+        const assignedById = new Map(assignedCopies.map((copy) => [copy.id, copy]));
+        return mapped.map((n) => assignedById.get(n.id) || n);
       });
 
       // 边处理: dragStart 时边已从 origId 转移到 phId,现在需恢复为 origId + 复制内部边给新节点
@@ -2534,7 +2641,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
             position: { x: _finalPos.x, y: _finalPos.y },
             data: { ...(INITIAL_DATA['output'] || {}) },
           };
-          setNodes((prev) => [...prev, newNode]);
+          setNodes((prev) => [...prev, ...assignActiveNodeSerials([newNode], prev)]);
           // 后续边连到新节点
           tgt = newNode;
           params = { ...params, target: newId };
@@ -2557,7 +2664,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         )
       );
     },
-    [resetConnectionPanMode]
+    [resetConnectionPanMode, assignActiveNodeSerials]
   );
 
   // ReactFlow 拖线连接时的实时校验(在连线处于“预览”阶段就拦截不兼容连接)
@@ -3335,7 +3442,8 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         position: picker.flowPos,
         data: { ...(INITIAL_DATA[meta.type] || {}) },
       };
-      setNodes((prev) => [...prev, newNode]);
+      const [nodeWithSerial] = assignActiveNodeSerials([newNode], nodes);
+      setNodes((prev) => [...prev, nodeWithSerial]);
 
       // 创建连线:根据 source/target 方向
       const isFromSource = picker.fromHandleType === 'source';
@@ -3345,7 +3453,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
 
       // 染色(使用 nodes + 新节点计算)
       const fromNode = nodes.find((n) => n.id === picker.fromNodeId);
-      const tempNewNode = newNode;
+      const tempNewNode = nodeWithSerial || newNode;
       const src = isFromSource ? fromNode : tempNewNode;
       const tgt = isFromSource ? tempNewNode : fromNode;
       const outs = src ? getNodeOutputs(src) : [];
@@ -3365,8 +3473,33 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       );
       setPicker(null);
     },
-    [picker, nodes]
+    [picker, nodes, assignActiveNodeSerials]
   );
+
+  const handleConnectPickerToNodeId = useCallback(() => {
+    if (!picker) return;
+    const raw = window.prompt(
+      picker.fromHandleType === 'source'
+        ? '输入要连接到的 NodeID'
+        : '输入要作为来源的 NodeID',
+    );
+    if (raw === null) return;
+    const result = resolveConnectionByNodeSerialId({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+      fromNodeId: picker.fromNodeId,
+      fromHandleType: picker.fromHandleType,
+      nodeSerialInput: raw,
+    });
+    if (!result.ok) {
+      logBus.warn(result.message, '发送到ID');
+      return;
+    }
+    onConnect(result.connection);
+    setPicker(null);
+    const serialId = parseNodeSerialInput(raw);
+    logBus.success(`已连接 NodeID #${serialId}`, '发送到ID');
+  }, [onConnect, picker]);
 
   // ===== 自动创建输出素材节点 =====
   // 生成类节点 (image/video/audio/seedance/llm/runninghub 等) 输出字段有值后,
@@ -3729,7 +3862,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
       }
       setNodes((prev) => [
         ...prev.filter((node) => !toRemoveNodeIds.has(node.id)),
-        ...toAddNodes,
+        ...assignActiveNodeSerials(toAddNodes, prev.filter((node) => !toRemoveNodeIds.has(node.id))),
       ]);
     }
     if (toRemoveEdgeIds.size > 0 || toAddEdges.length > 0) {
@@ -3738,7 +3871,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         ...toAddEdges,
       ]);
     }
-  }, [nodes, edges, loaded]);
+  }, [nodes, edges, loaded, assignActiveNodeSerials]);
 
   // ===== 自动外挂 OutputNode 的网格重排 =====
   // 创建时使用了固定占位坐标 (350x360), 但节点实际宽高取决于
@@ -3883,6 +4016,27 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
     setCenter(rect.x + rect.w / 2, rect.y + rect.h / 2, { zoom, duration: 450 });
     pulseNearestNode(nearest.id);
   }, [activeId, getViewport, loaded, loadedCanvasId, nodes, screenToFlowPosition, setCenter]);
+
+  const focusNodeBySerialId = useCallback(() => {
+    if (!loaded || loadedCanvasId !== activeId) return;
+    const raw = window.prompt('输入要查找的 NodeID');
+    if (raw === null) return;
+    const serialId = parseNodeSerialInput(raw);
+    if (!serialId) {
+      logBus.warn('请输入有效的 NodeID 数字', '查找 NodeID');
+      return;
+    }
+    const target = findNodeBySerialId(nodesRef.current, serialId);
+    if (!target) {
+      logBus.warn(`没有找到 NodeID #${serialId}`, '查找 NodeID');
+      return;
+    }
+    const rect = rectOf(target);
+    const currentZoom = getViewport().zoom || 1;
+    const zoom = Math.min(Math.max(currentZoom, 0.55), 1.15);
+    setCenter(rect.x + rect.w / 2, rect.y + rect.h / 2, { zoom, duration: 450 });
+    pulseNearestNode(target.id);
+  }, [activeId, getViewport, loaded, loadedCanvasId, setCenter]);
 
   // ===== 全局快捷键 =====
   useEffect(() => {
@@ -4087,6 +4241,7 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
         onExport={handleExport}
         onImport={handleImportClick}
         onApplyTemplate={handleApplyTemplate}
+        onFindNodeById={focusNodeBySerialId}
         onRunAll={handleRunAll}
         onCancelRun={handleCancelRun}
         isRunning={isRunning}
@@ -4339,6 +4494,31 @@ function CanvasInner({ onAddNodeRef }: CanvasInnerProps) {
                 {pickerCandidates.length} 个候选
               </span>
             </div>
+            <button
+              type="button"
+              className="t8-context-menu__item t8-context-menu__item--candidate"
+              onClick={handleConnectPickerToNodeId}
+            >
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{
+                  background: isPixel ? '#1A1410' : themeTokens.accent,
+                  boxShadow: isPixel ? '0 0 0 1.5px #1A1410' : `0 0 0 2px ${themeTokens.accent}33`,
+                }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-[12px] font-medium truncate">发送到ID</div>
+                <div
+                  className="text-[10px] truncate"
+                  style={{
+                    color: isPixel ? '#7a6f5e' : isDark ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.45)',
+                  }}
+                >
+                  输入已有节点编号并自动连线
+                </div>
+              </div>
+              <div className="text-[10px] opacity-60 flex-shrink-0">#</div>
+            </button>
             <div className="overflow-y-auto" style={{ maxHeight: 320 }}>
               {pickerCandidates.length === 0 && (
                 <div className="t8-context-menu__empty">

@@ -107,6 +107,7 @@ export interface CanvasData {
   nodes: any[];
   edges: any[];
   viewport: { x: number; y: number; zoom: number };
+  nextNodeSerialId?: number;
 }
 
 // API Key 设置(对应后端 settings)
