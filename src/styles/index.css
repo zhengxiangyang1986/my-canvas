@@ -1187,9 +1187,13 @@ html[data-theme-visual="op"] .t8-group-box__handle {
 }
 
 .t8-node-serial-badge {
+  --t8-node-serial-offset-x: 9px;
+  --t8-node-serial-offset-y: -10px;
   position: absolute;
-  top: -10px;
-  right: -9px;
+  top: var(--t8-node-serial-anchor-top, 0px);
+  left: var(--t8-node-serial-anchor-left, 100%);
+  right: auto;
+  transform: translate(calc(-100% + var(--t8-node-serial-offset-x)), var(--t8-node-serial-offset-y));
   z-index: 62;
   display: inline-flex;
   align-items: center;

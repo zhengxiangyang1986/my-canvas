@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type DragEvent as ReactDragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type DragEvent as ReactDragEvent, type RefObject } from 'react';
 import {
   ReactFlow,
   Background,
@@ -194,11 +194,100 @@ const SPECIFIC_NODES: Record<string, any> = {
   output: OutputNode,
 };
 
+const NODE_SERIAL_ANCHOR_LEFT = '--t8-node-serial-anchor-left';
+const NODE_SERIAL_ANCHOR_TOP = '--t8-node-serial-anchor-top';
+
+function findNodeSerialAnchorTarget(badgeEl: HTMLElement): HTMLElement | null {
+  const parent = badgeEl.parentElement;
+  if (!parent) return null;
+  for (const child of Array.from(parent.children)) {
+    if (!(child instanceof HTMLElement)) continue;
+    if (child === badgeEl) continue;
+    if (child.classList.contains('react-flow__handle')) continue;
+    if (child.classList.contains('t8-node-serial-badge')) continue;
+    return child;
+  }
+  return null;
+}
+
+function formatBadgeAnchorPx(value: number): string {
+  if (!Number.isFinite(value)) return '0px';
+  return `${Math.round(value * 100) / 100}px`;
+}
+
+function useNodeSerialBadgeAnchor(badgeRef: RefObject<HTMLElement | null>, enabled: boolean) {
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const badgeEl = badgeRef.current;
+    const parentEl = badgeEl?.parentElement;
+    if (!badgeEl || !parentEl || typeof window === 'undefined') return;
+    const badge = badgeEl;
+    const parent = parentEl;
+
+    let frame = 0;
+    let observedTarget: HTMLElement | null = null;
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(applyAnchor);
+    };
+
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => schedule());
+    const mutationObserver = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(() => schedule());
+
+    function applyAnchor() {
+      frame = 0;
+      const targetEl = findNodeSerialAnchorTarget(badge);
+      if (!targetEl) return;
+
+      if (resizeObserver && observedTarget !== targetEl) {
+        if (observedTarget) resizeObserver.unobserve(observedTarget);
+        observedTarget = targetEl;
+        resizeObserver.observe(targetEl);
+      }
+
+      const parentRect = parent.getBoundingClientRect();
+      const targetRect = targetEl.getBoundingClientRect();
+      const scaleX = targetEl.offsetWidth > 0 ? targetRect.width / targetEl.offsetWidth : 1;
+      const scaleY = targetEl.offsetHeight > 0 ? targetRect.height / targetEl.offsetHeight : scaleX;
+      const anchorLeft = scaleX > 0
+        ? (targetRect.right - parentRect.left) / scaleX
+        : targetEl.offsetLeft + targetEl.offsetWidth;
+      const anchorTop = scaleY > 0
+        ? (targetRect.top - parentRect.top) / scaleY
+        : targetEl.offsetTop;
+
+      badge.style.setProperty(NODE_SERIAL_ANCHOR_LEFT, formatBadgeAnchorPx(anchorLeft));
+      badge.style.setProperty(NODE_SERIAL_ANCHOR_TOP, formatBadgeAnchorPx(anchorTop));
+    }
+
+    resizeObserver?.observe(parent);
+    mutationObserver?.observe(parent, { childList: true });
+    window.addEventListener('resize', schedule);
+    applyAnchor();
+    schedule();
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', schedule);
+      badge.style.removeProperty(NODE_SERIAL_ANCHOR_LEFT);
+      badge.style.removeProperty(NODE_SERIAL_ANCHOR_TOP);
+    };
+  }, [badgeRef, enabled]);
+}
+
 function NodeSerialBadge({ data }: { data: unknown }) {
   const serialId = parseNodeSerialInput((data as any)?.nodeSerialId);
+  const badgeRef = useRef<HTMLSpanElement | null>(null);
+  useNodeSerialBadgeAnchor(badgeRef, Boolean(serialId));
   if (!serialId) return null;
   return (
-    <span className="t8-node-serial-badge" title={`NodeID #${serialId}`}>
+    <span ref={badgeRef} className="t8-node-serial-badge" title={`NodeID #${serialId}`}>
       #{serialId}
     </span>
   );
