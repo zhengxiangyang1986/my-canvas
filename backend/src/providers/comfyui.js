@@ -1,3 +1,10 @@
+const fs = require('fs');
+const path = require('path');
+const {
+  mimeFromPath,
+  resolveMediaRef,
+} = require('./mediaResolver');
+
 const DEFAULT_TIMEOUT_MS = 5000;
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const SUCCESS_STATUSES = new Set(['SUCCESS', 'SUCCEEDED', 'COMPLETED', 'DONE', 'OK']);
@@ -70,25 +77,132 @@ function findWorkflow(provider, input = {}) {
   return workflows[0];
 }
 
-function sourceValue(source, input, size) {
+function extensionForMime(mime) {
+  const text = String(mime || '').toLowerCase();
+  if (text.includes('jpeg') || text.includes('jpg')) return '.jpg';
+  if (text.includes('webp')) return '.webp';
+  if (text.includes('gif')) return '.gif';
+  if (text.includes('bmp')) return '.bmp';
+  if (text.includes('avif')) return '.avif';
+  return '.png';
+}
+
+function imageRefForSource(source, input) {
+  const key = String(source || '').trim().toLowerCase();
+  const match = key.match(/^image(?:_|-)?(\d+)$/);
+  if (!match) return '';
+  const index = Math.max(0, Number(match[1]) - 1);
+  const images = Array.isArray(input.images) ? input.images : [];
+  return String(images[index] || '').trim();
+}
+
+async function uploadImageToComfy(baseUrl, imageRef, options = {}) {
+  if (!imageRef) return '';
+  let buffer = null;
+  let filename = '';
+  let mime = 'image/png';
+  const mediaBaseUrl = options.mediaBaseUrl || options.t8BaseUrl;
+
+  try {
+    const local = await resolveMediaRef(imageRef, { target: 'local-path', baseUrl: mediaBaseUrl });
+    buffer = fs.readFileSync(local.path);
+    filename = path.basename(local.path);
+    mime = local.mime || mimeFromPath(local.path, mime);
+  } catch {
+    const resolved = await resolveMediaRef(imageRef, { target: 'url', baseUrl: mediaBaseUrl });
+    const res = await fetchWithTimeout(resolved.url, {
+      method: 'GET',
+      timeoutMs: options.timeoutMs || 30000,
+      fetchImpl: options.fetchImpl,
+    });
+    if (!res.ok) throw new Error(`ComfyUI 参考图下载失败：HTTP ${res.status}`);
+    const arrayBuffer = await res.arrayBuffer();
+    buffer = Buffer.from(arrayBuffer);
+    mime = res.headers?.get?.('content-type') || mime;
+    filename = `t8-comfy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extensionForMime(mime)}`;
+  }
+
+  const form = new FormData();
+  form.append('image', new Blob([buffer], { type: mime }), filename);
+  form.append('type', 'input');
+  form.append('overwrite', 'true');
+
+  const uploadRes = await fetchWithTimeout(`${baseUrl}/upload/image`, {
+    method: 'POST',
+    body: form,
+    timeoutMs: options.timeoutMs || 30000,
+    fetchImpl: options.fetchImpl,
+  });
+  const raw = await responseJson(uploadRes);
+  if (!uploadRes.ok) throw new Error(`ComfyUI 上传参考图失败：HTTP ${uploadRes.status}`);
+  return String(raw?.name || raw?.filename || raw?.image || filename).trim();
+}
+
+async function sourceValue(source, input, size, context = {}) {
   const key = String(source || '').trim();
+  const imageRef = imageRefForSource(key, input);
+  if (imageRef) return uploadImageToComfy(context.comfyBaseUrl || context.baseUrl, imageRef, context);
   if (key === 'prompt' || key === 'positive') return String(input.prompt || '');
   if (key === 'negative') return String(input.negativePrompt || input.negative || '');
   if (key === 'width') return size.width;
   if (key === 'height') return size.height;
   if (key === 'seed') return Number.isFinite(Number(input.seed)) ? Number(input.seed) : Math.floor(Math.random() * 2147483647);
+  if (['steps', 'cfg', 'sampler_name', 'scheduler', 'denoise'].includes(key)) {
+    if (input.providerParams && Object.prototype.hasOwnProperty.call(input.providerParams, key)) return input.providerParams[key];
+    return Object.prototype.hasOwnProperty.call(input, key) ? input[key] : undefined;
+  }
   if (key && Object.prototype.hasOwnProperty.call(input, key)) return input[key];
   return input.providerParams && Object.prototype.hasOwnProperty.call(input.providerParams, key) ? input.providerParams[key] : undefined;
 }
 
-function patchByFields(prompt, fields, input, size) {
+function inferWorkflowFields(prompt) {
+  const fields = [];
+  let promptSeen = false;
+  let imageIndex = 0;
+  const seen = new Set();
+  const push = (nodeId, fieldName, source) => {
+    const key = `${nodeId}::${fieldName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    fields.push({ nodeId, fieldName, source });
+  };
+  for (const [nodeId, node] of Object.entries(prompt || {})) {
+    if (!node || typeof node !== 'object' || !node.inputs || typeof node.inputs !== 'object') continue;
+    const classType = String(node.class_type || '').toLowerCase();
+    const title = `${node._meta?.title || ''} ${node.title || ''}`.toLowerCase();
+    const inputs = node.inputs;
+    if (classType.includes('cliptextencode') && Object.prototype.hasOwnProperty.call(inputs, 'text')) {
+      const negative = /negative|neg|反向|负向|不要|排除/.test(title) || promptSeen;
+      push(nodeId, 'text', negative ? 'negative' : 'prompt');
+      if (!negative) promptSeen = true;
+    }
+    if ((classType.includes('loadimage') || classType.includes('imageinput')) && Object.prototype.hasOwnProperty.call(inputs, 'image')) {
+      imageIndex += 1;
+      push(nodeId, 'image', `image${Math.min(imageIndex, 3)}`);
+    }
+    if (classType.includes('emptylatent') || classType.includes('latentimage')) {
+      if (Object.prototype.hasOwnProperty.call(inputs, 'width')) push(nodeId, 'width', 'width');
+      if (Object.prototype.hasOwnProperty.call(inputs, 'height')) push(nodeId, 'height', 'height');
+    }
+    if (classType.includes('ksampler') || classType.includes('sampler')) {
+      if (Object.prototype.hasOwnProperty.call(inputs, 'seed')) push(nodeId, 'seed', 'seed');
+      if (Object.prototype.hasOwnProperty.call(inputs, 'noise_seed')) push(nodeId, 'noise_seed', 'seed');
+      for (const key of ['steps', 'cfg', 'sampler_name', 'scheduler', 'denoise']) {
+        if (Object.prototype.hasOwnProperty.call(inputs, key)) push(nodeId, key, key);
+      }
+    }
+  }
+  return fields;
+}
+
+async function patchByFields(prompt, fields, input, size, context = {}) {
   if (!Array.isArray(fields)) return;
   for (const field of fields) {
     if (!field || typeof field !== 'object') continue;
     const nodeId = String(field.nodeId || field.node || '').trim();
     const fieldName = String(field.fieldName || field.input || field.name || '').trim();
     if (!nodeId || !fieldName || !prompt[nodeId]?.inputs) continue;
-    const value = field.value !== undefined ? field.value : sourceValue(field.source || fieldName, input, size);
+    const value = field.value !== undefined ? field.value : await sourceValue(field.source || fieldName, input, size, context);
     if (value !== undefined) prompt[nodeId].inputs[fieldName] = value;
   }
 }
@@ -111,11 +225,12 @@ function patchByHeuristics(prompt, input, size) {
   }
 }
 
-function patchWorkflow(workflow, input = {}) {
+async function patchWorkflow(workflow, input = {}, context = {}) {
   const prompt = cloneWorkflow(workflow?.workflowJson || workflow?.workflow || workflow?.raw || workflow);
   if (!prompt) return null;
   const size = parseSize(input.size || `${input.width || 1024}x${input.height || 1024}`);
-  patchByFields(prompt, workflow?.fields, input, size);
+  const fields = Array.isArray(workflow?.fields) && workflow.fields.length ? workflow.fields : inferWorkflowFields(prompt);
+  await patchByFields(prompt, fields, input, size, context);
   patchByHeuristics(prompt, input, size);
   return prompt;
 }
@@ -212,7 +327,11 @@ async function generateImage(provider, input = {}, options = {}) {
   if (!workflow) {
     return { ok: false, code: 'missing_workflow', providerId: provider.id, protocol: 'comfyui', error: '请先在扩展平台设置中保存 ComfyUI 工作流。' };
   }
-  const prompt = patchWorkflow(workflow, input);
+  const prompt = await patchWorkflow(workflow, input, {
+    ...options,
+    comfyBaseUrl: baseUrl,
+    mediaBaseUrl: options.baseUrl,
+  });
   if (!prompt) {
     return { ok: false, code: 'invalid_workflow', providerId: provider.id, protocol: 'comfyui', error: 'ComfyUI 工作流 JSON 无效。' };
   }

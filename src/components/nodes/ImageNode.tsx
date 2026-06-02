@@ -102,6 +102,13 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
   const externalProviderModel = providerSelection.providerModel || externalModelOptions[0] || '';
   const providerParams = (d?.providerParams && typeof d.providerParams === 'object') ? d.providerParams : {};
   const isModelScopeExternal = isExternalSelected && providerSelection.provider?.protocol === 'modelscope';
+  const isComfyExternal = isExternalSelected && providerSelection.provider?.protocol === 'comfyui';
+  const comfyWorkflow = isComfyExternal
+    ? providerSelection.provider?.comfyuiConfig?.workflows?.find((workflow) => workflow.id === externalProviderModel || workflow.name === externalProviderModel)
+    : undefined;
+  const comfyRequiredImageCount = isComfyExternal
+    ? (comfyWorkflow?.fields || []).filter((field: any) => /^image\d+$/i.test(String(field?.source || ''))).length
+    : 0;
   const modelscopeLoras = useMemo(
     () => modelscopeLorasForModel(providerSelection.provider, externalProviderModel),
     [providerSelection.provider, externalProviderModel],
@@ -843,6 +850,21 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
                     {!modelscopeLoras.length && (
                       <div className="text-[10px] leading-relaxed text-white/45">
                         到 API 设置的 ModelScope LoRA 区，为当前外部模型绑定 LoRA 后即可在这里选择。
+                      </div>
+                    )}
+                  </div>
+                )}
+                {isComfyExternal && (
+                  <div className="rounded border border-white/10 bg-white/[0.03] p-2 space-y-1">
+                    <div className="text-[10px] font-semibold text-white/70">ComfyUI 工作流</div>
+                    <div className="text-[10px] leading-relaxed text-white/45">
+                      {comfyRequiredImageCount > 0
+                        ? `此工作流需要 ${comfyRequiredImageCount} 张上游/本地参考图；当前已准备 ${orderedImages.length} 张。`
+                        : '此工作流未声明必需图片，通常会按 Prompt、尺寸和 Seed 自动注入。'}
+                    </div>
+                    {comfyRequiredImageCount > orderedImages.length && (
+                      <div className="text-[10px] text-amber-200">
+                        请连接上传素材或在参考图区域添加图片，否则 ComfyUI 的 LoadImage 字段会缺失。
                       </div>
                     )}
                   </div>

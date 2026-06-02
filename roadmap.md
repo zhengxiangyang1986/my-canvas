@@ -1,5 +1,33 @@
 # T8-penguin-canvas Roadmap
 
+## ComfyUI 本地 API 简化接入路线（开发中）
+
+> 目标：把当前“粘 API Workflow JSON + 手写 fields JSON”的高级配置，改成普通用户可理解的向导式接入。ComfyUI 仍属于扩展 API 平台高级来源，不替代贞贞主流程；只有用户主动启用并在图像节点里选择 ComfyUI 工作流时才生效。
+
+### 1. 设计原则
+
+- 连接先行：设置页先测试 `http://127.0.0.1:8188` 的 `/queue`，再导入工作流，避免用户不知道是 ComfyUI 没开还是 workflow 配错。
+- 导入即分析：用户粘贴 API Workflow 后自动扫描常见节点，不再默认要求手写 fields JSON。
+- 映射可视化：把 ComfyUI 节点字段展示成表格，用下拉选择来源：正向 Prompt、负向 Prompt、上游图片、宽、高、Seed、Steps、CFG、Sampler、Scheduler、固定值。
+- 高级入口保留：保留 raw workflow JSON 和 fields JSON 作为高级模式，兼容旧配置和复杂工作流。
+- 后端兜底：后端继续保留 heuristic patch；显式映射优先，自动映射其次，避免旧画布断裂。
+- 输出统一：ComfyUI `/view` 输出仍转存为 T8 `/files/output/*`，继续兼容 OutputNode、资源库、自动保存、节点发送和 Loop。
+
+### 2. 第一版范围
+
+- 设置页 ComfyUI 表单新增自动识别输入字段和推荐映射表。
+- 工作流 JSON 解析成功后自动生成 fields 映射：`CLIPTextEncode.text`、`LoadImage.image`、`EmptyLatentImage.width/height`、`KSampler.seed/steps/cfg/sampler_name/scheduler`。
+- 后端 ComfyUI adapter 支持 `source=image1/image2/...`：自动把图像节点上游参考图上传到 ComfyUI `/upload/image`，再写入 `LoadImage.image`。
+- 图像节点选择 ComfyUI 高级来源时保留工作流下拉，并补充“需要上游图片”提示，减少运行失败。
+- 测试覆盖自动映射、LoadImage 上传注入、旧 fields JSON 兼容和生产构建。
+
+### 3. 后续阶段
+
+- 支持多个工作流库条目：名称、类型、标签、缩略图、测试状态、导入/导出。
+- 支持 ControlNet / OpenPose / Mask / Video 工作流的专用映射来源。
+- 设置页加入“从 ComfyUI 历史任务导入当前 prompt/workflow”的快捷入口。
+- 后续可新增独立“本地 ComfyUI”节点，但只有保存至少一个工作流后才在侧栏显示。
+
 ## RH 工具箱路线（开发中）
 
 > 目标：新增只读精选节点「RH工具箱」。它和「RH超市」共享 RunningHub 提交能力，但职责不同：RH超市让用户自己维护应用；RH工具箱只展示维护者预置的工具，并通过统一调用协议给画布其他功能复用，例如图像抠图/编辑/放大、视频编辑/放大、文本扩写、音频克隆等。

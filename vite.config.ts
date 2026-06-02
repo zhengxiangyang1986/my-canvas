@@ -6,6 +6,7 @@ import path from 'path';
 // 端口策略:前端 11422 / 后端 18766(避开主项目 5176/18765 与常见 51xx 占用)
 export default defineConfig({
   plugins: [react()],
+  assetsInclude: ['**/*.mid'],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

@@ -8,6 +8,7 @@
 @import './theme-eva.css';
 @import './theme-yyh.css';
 @import './theme-slamdunk.css';
+@import './theme-soccer.css';
 
 @tailwind base;
 @tailwind components;
@@ -1016,6 +1017,11 @@ body.cut-mode .react-flow__edge .react-flow__edge-interaction {
 }
 
 .t8-edge-pass-ball {
+  display: none;
+  pointer-events: none;
+}
+
+.t8-edge-soccer-ball {
   display: none;
   pointer-events: none;
 }

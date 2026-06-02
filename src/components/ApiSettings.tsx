@@ -11,6 +11,12 @@ import {
   parseAdvancedProviderModelText,
   stringifyAdvancedProviderModels,
 } from '../utils/advancedProviders';
+import {
+  COMFY_FIELD_SOURCE_OPTIONS,
+  analyzeComfyWorkflow,
+  compactComfyFields,
+  type ComfyFieldMapping,
+} from '../utils/comfyuiWorkflow';
 
 interface ApiSettingsModalProps {
   open: boolean;
@@ -136,6 +142,15 @@ const MODELSCOPE_TOKEN_URLS = {
 } as const;
 
 const JIMENG_CLI_INSTALL_COMMAND = 'curl -s https://jimeng.jianying.com/cli | bash';
+
+function tryParseJsonObject(raw: string): Record<string, any> | null {
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 interface AdvancedProviderFormBlockProps {
   title: string;
@@ -603,6 +618,12 @@ export default function ApiSettingsModal({ open, onClose }: ApiSettingsModalProp
       : 't8-api-settings-pill inline-flex items-center rounded px-1.5 py-0.5 border text-[10px] font-semibold';
     const comfyWorkflow = (provider.comfyuiConfig?.workflows?.[0] || { id: 'workflow-1', name: '默认工作流' }) as NonNullable<NonNullable<AdvancedProviderConfig['comfyuiConfig']>['workflows']>[number];
     const comfyDraft = advancedComfyDrafts[provider.id] || {};
+    const comfyWorkflowRaw = comfyDraft.workflowJson ?? (comfyWorkflow.workflowJson ? JSON.stringify(comfyWorkflow.workflowJson, null, 2) : '');
+    const comfyWorkflowObject = tryParseJsonObject(comfyWorkflowRaw);
+    const comfyAnalysis = analyzeComfyWorkflow(comfyWorkflowObject || comfyWorkflow.workflowJson || null);
+    const comfyMappedFields = compactComfyFields(
+      (Array.isArray(comfyWorkflow.fields) && comfyWorkflow.fields.length ? comfyWorkflow.fields : comfyAnalysis.fields) as ComfyFieldMapping[],
+    );
     const setComfyDraft = (patch: { workflowJson?: string; fields?: string }) => {
       setAdvancedComfyDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), ...patch } }));
     };
@@ -614,8 +635,23 @@ export default function ApiSettingsModal({ open, onClose }: ApiSettingsModalProp
     const updateComfyWorkflowJson = (raw: string) => {
       setComfyDraft({ workflowJson: raw });
       try {
-        updateComfyWorkflow({ workflowJson: JSON.parse(raw) });
-        setAdvancedTestStatus((prev) => ({ ...prev, [provider.id]: { ok: true, message: '工作流 JSON 已解析' } }));
+        const workflowJson = JSON.parse(raw);
+        const analysis = analyzeComfyWorkflow(workflowJson);
+        const nextFields = compactComfyFields(analysis.fields);
+        updateComfyWorkflow({
+          workflowJson,
+          ...(nextFields.length ? { fields: nextFields } : {}),
+        });
+        if (nextFields.length) setComfyDraft({ fields: JSON.stringify(nextFields, null, 2) });
+        setAdvancedTestStatus((prev) => ({
+          ...prev,
+          [provider.id]: {
+            ok: true,
+            message: nextFields.length
+              ? `工作流已解析，自动识别 ${nextFields.length} 个输入字段`
+              : '工作流 JSON 已解析，但未自动识别到常用输入字段',
+          },
+        }));
       } catch {
         setAdvancedTestStatus((prev) => ({ ...prev, [provider.id]: { ok: false, message: '工作流 JSON 格式不正确，修正后会自动保存' } }));
       }
@@ -630,6 +666,32 @@ export default function ApiSettingsModal({ open, onClose }: ApiSettingsModalProp
       } catch {
         setAdvancedTestStatus((prev) => ({ ...prev, [provider.id]: { ok: false, message: '参数映射 JSON 需要是数组' } }));
       }
+    };
+    const applyComfyAutoMapping = () => {
+      const workflowJson = comfyWorkflowObject || comfyWorkflow.workflowJson;
+      const analysis = analyzeComfyWorkflow(workflowJson || null);
+      const fields = compactComfyFields(analysis.fields);
+      updateComfyWorkflow({ fields });
+      setComfyDraft({ fields: JSON.stringify(fields, null, 2) });
+      setAdvancedTestStatus((prev) => ({
+        ...prev,
+        [provider.id]: {
+          ok: fields.length > 0,
+          message: fields.length
+            ? `已应用自动映射：${fields.length} 个字段`
+            : '没有识别到可自动映射的字段',
+        },
+      }));
+    };
+    const updateComfyField = (index: number, patch: Partial<ComfyFieldMapping>) => {
+      const nextFields = comfyMappedFields.map((field, i) => (i === index ? { ...field, ...patch } : field));
+      updateComfyWorkflow({ fields: nextFields });
+      setComfyDraft({ fields: JSON.stringify(nextFields, null, 2) });
+    };
+    const removeComfyField = (index: number) => {
+      const nextFields = comfyMappedFields.filter((_, i) => i !== index);
+      updateComfyWorkflow({ fields: nextFields });
+      setComfyDraft({ fields: JSON.stringify(nextFields, null, 2) });
     };
     const modelscopeLoras = Array.isArray(provider.modelscopeConfig?.loras) ? provider.modelscopeConfig.loras : [];
     const setModelscopeLoras = (loras: any[]) => {
@@ -911,23 +973,109 @@ export default function ApiSettingsModal({ open, onClose }: ApiSettingsModalProp
             <label className="space-y-1 block">
               <span className={`text-[11px] ${labelCls}`}>工作流 JSON（从 ComfyUI 导出的 API 格式）</span>
               <textarea
-                value={comfyDraft.workflowJson ?? (comfyWorkflow.workflowJson ? JSON.stringify(comfyWorkflow.workflowJson, null, 2) : '')}
+                value={comfyWorkflowRaw}
                 onChange={(e) => updateComfyWorkflowJson(e.target.value)}
                 className={`${textareaCls} min-h-[140px]`}
                 placeholder='粘贴 ComfyUI API workflow JSON，例如 {"1":{"class_type":"CLIPTextEncode","inputs":{"text":""}}}'
               />
               <p className={`text-[11px] ${hintCls}`}>不是普通前端 workflow 文件，需要在 ComfyUI 开启 dev mode 后导出的 API workflow。</p>
             </label>
-            <label className="space-y-1 block">
-              <span className={`text-[11px] ${labelCls}`}>参数映射 JSON（可选，高级用户）</span>
+            <div className={guideBoxCls}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className={`text-xs font-black ${labelCls}`}>自动识别结果</div>
+                  <p className={`mt-1 ${hintCls}`}>
+                    已识别 {comfyAnalysis.fields.length} 个可映射字段，图片输入 {comfyAnalysis.imageInputCount} 个，输出节点 {comfyAnalysis.outputCount} 个。
+                  </p>
+                  {comfyAnalysis.warnings.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {comfyAnalysis.warnings.slice(0, 3).map((warning, index) => (
+                        <p key={`${provider.id}-comfy-warning-${index}`} className="text-[10px] text-amber-400">{warning}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={applyComfyAutoMapping}
+                  className={
+                    isPixel
+                      ? 't8-api-settings-secondary-btn px-btn text-[11px] px-2 py-1 shrink-0'
+                      : 't8-api-settings-secondary-btn px-2 py-1 text-[11px] rounded border shrink-0'
+                  }
+                >
+                  自动映射
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className={`text-xs font-black ${labelCls}`}>参数映射</div>
+              {comfyMappedFields.length > 0 ? (
+                <div className="space-y-1.5">
+                  {comfyMappedFields.map((field, index) => {
+                    const detected = comfyAnalysis.fields.find((item) => item.nodeId === field.nodeId && item.fieldName === field.fieldName);
+                    const isFixed = String(field.source || '') === 'fixed';
+                    return (
+                      <div
+                        key={`${field.nodeId}-${field.fieldName}-${index}`}
+                        className={isPixel ? 't8-api-settings-section border p-2 space-y-2' : 't8-api-settings-section rounded border p-2 space-y-2'}
+                      >
+                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_180px_32px] gap-2 items-end">
+                          <div className="min-w-0">
+                            <div className={`text-[11px] font-bold truncate ${labelCls}`} title={detected?.label || `${field.nodeId}.${field.fieldName}`}>
+                              {detected?.label || `节点 #${field.nodeId} · ${field.fieldName}`}
+                            </div>
+                            <div className={`text-[10px] truncate ${hintCls}`}>
+                              {detected?.classType || 'Custom'} / {field.nodeId}.{field.fieldName}
+                            </div>
+                          </div>
+                          <label className="space-y-1">
+                            <span className={`text-[10px] ${hintCls}`}>来源</span>
+                            <select
+                              value={(field.source || field.fieldName || 'fixed') as string}
+                              onChange={(e) => updateComfyField(index, { source: e.target.value })}
+                              className={fieldInputCls}
+                            >
+                              {COMFY_FIELD_SOURCE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => removeComfyField(index)}
+                            className={isPixel ? 'px-btn text-[11px] px-2 py-1' : 'rounded border px-2 py-1 text-[11px]'}
+                            title="移除此映射"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                        {isFixed && (
+                          <input
+                            value={String(field.value ?? '')}
+                            onChange={(e) => updateComfyField(index, { value: e.target.value })}
+                            className={fieldInputCls}
+                            placeholder="固定写入这个 ComfyUI 字段的值"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className={`text-[11px] ${hintCls}`}>粘贴 API Workflow 后会自动生成映射；也可以在下面高级 JSON 中手动填写。</p>
+              )}
+            </div>
+            <details className="space-y-2">
+              <summary className={`cursor-pointer text-[11px] font-bold ${labelCls}`}>高级：直接编辑 fields JSON</summary>
               <textarea
-                value={comfyDraft.fields ?? JSON.stringify(comfyWorkflow.fields || [], null, 2)}
+                value={comfyDraft.fields ?? JSON.stringify(comfyMappedFields, null, 2)}
                 onChange={(e) => updateComfyFields(e.target.value)}
                 className={textareaCls}
                 placeholder='[{"nodeId":"1","fieldName":"text","source":"prompt"}]'
               />
-              <p className={`text-[11px] ${hintCls}`}>用于把节点 prompt、参考图等写入指定 ComfyUI 节点字段；不填时后端会尝试按常见字段自动写入。</p>
-            </label>
+              <p className={`text-[11px] ${hintCls}`}>用于兼容复杂工作流。普通用户建议使用上方映射表。</p>
+            </details>
           </AdvancedProviderFormBlock>
         )}
 
