@@ -51,7 +51,7 @@ export default defineConfig({
     },
   },
   define: {
-      __APP_VERSION__: JSON.stringify('1.9.5'),
+      __APP_VERSION__: JSON.stringify('1.9.7'),
     __APP_NAME__: JSON.stringify('T8-penguin-canvas'),
   },
 });

@@ -544,7 +544,7 @@ async function generateVideo(provider, input = {}, options = {}) {
     args.push('frames2video', `--first=${firstPath}`, `--last=${lastPath}`, `--prompt=${prompt}`, `--duration=${duration}`);
   } else if (refs.length >= 2) {
     const paths = [];
-    for (const ref of refs.slice(0, 8)) paths.push(await resolveLocalMedia(ref, 'image', provider, options));
+    for (const ref of refs.slice(0, 9)) paths.push(await resolveLocalMedia(ref, 'image', provider, options));
     args.push('multiframe2video', `--images=${paths.join(',')}`, `--prompt=${prompt}`, `--duration=${duration}`);
   } else if (refs.length === 1) {
     const refPath = await resolveLocalMedia(refs[0], 'image', provider, options);
@@ -553,12 +553,9 @@ async function generateVideo(provider, input = {}, options = {}) {
   } else {
     args.push('text2video', `--prompt=${prompt}`, `--duration=${duration}`, `--ratio=${ratio || '16:9'}`);
   }
-  const commandName = args[0];
-  if (commandName !== 'multiframe2video') {
-    const modelVersion = videoModelVersion(model);
-    if (modelVersion) args.push(`--model_version=${modelVersion}`);
-    args.push(`--video_resolution=${videoResolution(model, input.resolution).toLowerCase()}`);
-  }
+  const modelVersion = videoModelVersion(model);
+  if (modelVersion) args.push(`--model_version=${modelVersion}`);
+  args.push(`--video_resolution=${videoResolution(model, input.resolution).toLowerCase()}`);
   args.push(`--poll=${pollSeconds(provider)}`);
   try {
     const raw = await runCli(provider, args, options, 180);

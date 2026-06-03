@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   advancedProviderSummary,
@@ -145,4 +146,17 @@ test('modelscopeLorasForModel filters enabled LoRA entries for selected image mo
   assert.equal(loras[0].strength, 0.75);
   assert.equal(normalizeModelscopeLoraStrength(8), 2);
   assert.equal(normalizeModelscopeLoraStrength(-1), 0);
+});
+
+test('VideoNode keeps Jimeng Seedance media limits separate from Grok FAL controls', () => {
+  const source = fs.readFileSync(new URL('../src/components/nodes/VideoNode.tsx', import.meta.url), 'utf8');
+  const ports = fs.readFileSync(new URL('../src/config/portTypes.ts', import.meta.url), 'utf8');
+
+  assert.match(source, /JIMENG_SEEDANCE_LIMITS = \{ images: 9, videos: 3, audios: 3 \}/);
+  assert.match(source, /showBuiltinFalControls = !isExternalSelected && isFal/);
+  assert.match(source, /isJimengSeedanceSelected \? \['image', 'video', 'audio', 'text'\]/);
+  assert.match(source, /videos: videoRefs/);
+  assert.match(source, /audios: audioRefs/);
+  assert.match(source, /图\$\{refs\.length\}\/视\$\{videoRefs\.length\}\/音\$\{audioRefs\.length\}/);
+  assert.match(ports, /video:\s*\{\s*inputs:\s*\['text', 'image', 'video', 'audio'\],\s*outputs:\s*\['video'\]\s*\}/);
 });
