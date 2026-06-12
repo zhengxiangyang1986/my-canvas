@@ -108,3 +108,9 @@ backend/data/
 
 # OS
 Thumbs.db
+
+# CodeGraph 索引 (本地生成)
+.codegraph/
+
+# Playwright CLI 临时录制 (本地生成)
+.playwright-cli/
