@@ -87,6 +87,7 @@ interface Collected {
   videos: string[];
   audios: string[];
   models: string[];
+  remoteMap: Record<string, string>;
 }
 
 const OutputNode = ({ id, data, selected }: NodeProps) => {
@@ -193,7 +194,7 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
   }, [upstreamNodes]);
 
   const collected = useMemo<Collected>(() => {
-    const out: Collected = { texts: [], images: [], videos: [], audios: [], models: [] };
+    const out: Collected = { texts: [], images: [], videos: [], audios: [], models: [], remoteMap: {} };
 
     // 「被 LLM 消化」文本跳过集: 与 useUpstreamMaterials 保持一致。
     // 场景: TextNode 同时连 LLM 和 OutputNode 时, 避免 原始 prompt + LLM reply 同现 2 条。
@@ -221,6 +222,15 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       if (!s) return;
       if (arr.indexOf(s) === -1) arr.push(s);
     };
+    const pushUniqueWithRemote = (arr: string[], v: any, remoteUrl?: any) => {
+      if (typeof v !== 'string') return;
+      const s = v.trim();
+      if (!s) return;
+      if (typeof remoteUrl === 'string' && remoteUrl) {
+        out.remoteMap[s] = remoteUrl;
+      }
+      if (arr.indexOf(s) === -1) arr.push(s);
+    };
     const pushUniqueText = (arr: string[], v: any) => {
       if (typeof v !== 'string') return;
       const s = v.trim();
@@ -239,6 +249,18 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       if (typeof value !== 'string') return;
       const url = value.trim();
       if (!url) return;
+      if (isModel3DUrl(url)) pushUnique(out.models, url);
+      else if (isVideoUrl(url)) pushUnique(out.videos, url);
+      else if (isAudioUrl(url)) pushUnique(out.audios, url);
+      else pushUnique(out.images, url);
+    };
+    const pushClassifiedUrlWithRemote = (value: any, remoteUrl?: any) => {
+      if (typeof value !== 'string') return;
+      const url = value.trim();
+      if (!url) return;
+      if (typeof remoteUrl === 'string' && remoteUrl) {
+        out.remoteMap[url] = remoteUrl;
+      }
       if (isModel3DUrl(url)) pushUnique(out.models, url);
       else if (isVideoUrl(url)) pushUnique(out.videos, url);
       else if (isAudioUrl(url)) pushUnique(out.audios, url);
@@ -299,12 +321,25 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
         }
 
       // 图像 - 单
-        pushUnique(out.images, ud.imageUrl);
+        const singleRemote = typeof ud.remoteImageUrl === 'string' 
+          ? ud.remoteImageUrl 
+          : (Array.isArray(ud.remoteImageUrls) ? ud.remoteImageUrls[0] : undefined);
+        pushUniqueWithRemote(out.images, ud.imageUrl, singleRemote);
         // 图像 - 多
         const arrFields = ['imageUrls', 'urls', 'generatedImages'];
-        for (const f of arrFields) {
+        const remoteArrFields = ['remoteImageUrls', 'remoteUrls', 'remoteImageUrls'];
+        for (let i = 0; i < arrFields.length; i++) {
+          const f = arrFields[i];
+          const rf = remoteArrFields[i];
           const v = ud[f];
-          if (Array.isArray(v)) v.forEach((u) => (f === 'urls' ? pushClassifiedUrl(u) : pushUnique(out.images, u)));
+          const rv = ud[rf];
+          if (Array.isArray(v)) {
+            v.forEach((u, idx) => {
+              const r = Array.isArray(rv) ? rv[idx] : undefined;
+              if (f === 'urls') pushClassifiedUrlWithRemote(u, r);
+              else pushUniqueWithRemote(out.images, u, r);
+            });
+          }
         }
 
       // 3D 模型
@@ -729,12 +764,15 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       collected.audios.length > 0 ||
       collected.models.length > 0;
     const passText = hasNonText ? '' : (displayText || '');
+    const nextRemoteImageUrls = collected.images.map(u => collected.remoteMap[u] || undefined);
     const next: any = {
       prompt: passText,
       text: passText,
       reply: passText,
       imageUrl: collected.images[0] || '',
       imageUrls: collected.images.slice(),
+      remoteImageUrl: nextRemoteImageUrls[0] || undefined,
+      remoteImageUrls: nextRemoteImageUrls,
       urls: collected.images.slice(),
       videoUrl: collected.videos[0] || '',
       audioUrl: collected.audios[0] || '',
@@ -750,6 +788,7 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       reply: d.reply || '',
       imageUrl: d.imageUrl || '',
       imageUrls: Array.isArray(d.imageUrls) ? d.imageUrls : [],
+      remoteImageUrls: Array.isArray(d.remoteImageUrls) ? d.remoteImageUrls : [],
       urls: Array.isArray(d.urls) ? d.urls : [],
       videoUrl: d.videoUrl || '',
       audioUrl: d.audioUrl || '',
@@ -769,6 +808,7 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       cur.audioUrl_1 !== next.audioUrl_1 ||
       cur.modelUrl !== next.modelUrl ||
       JSON.stringify(cur.imageUrls) !== JSON.stringify(next.imageUrls) ||
+      JSON.stringify(cur.remoteImageUrls) !== JSON.stringify(next.remoteImageUrls) ||
       JSON.stringify(cur.urls) !== JSON.stringify(next.urls) ||
       JSON.stringify(cur.modelUrls) !== JSON.stringify(next.modelUrls) ||
       JSON.stringify(cur.textSegments) !== JSON.stringify(next.textSegments) ||

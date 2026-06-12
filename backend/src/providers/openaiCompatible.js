@@ -157,7 +157,7 @@ function collectVideoUrls(value, out = []) {
   }
   if (typeof value !== 'object') return out;
 
-  const direct = value.video_url || value.videoUrl || value.url || value.uri || value.value || value.download_url || value.downloadUrl;
+  const direct = value.video_url || value.videoUrl || value.url || value.uri || value.value || value.download_url || value.downloadUrl || value.remixed_from_video_id;
   if (direct) collectVideoUrls(direct, out);
   for (const key of ['data', 'videos', 'video_urls', 'videoUrls', 'output_videos', 'outputs', 'results', 'files']) {
     if (Object.prototype.hasOwnProperty.call(value, key)) collectVideoUrls(value[key], out);

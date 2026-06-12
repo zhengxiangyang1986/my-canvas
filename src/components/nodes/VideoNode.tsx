@@ -151,6 +151,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
   const isSoraZhenzhen = !isExternalSelected && modelDef.kind === 'sora' && !isFal;
   const isVeoOmni = !isExternalSelected && apiModel === 'veo-omni-10s';
   const showBuiltinFalControls = !isExternalSelected && isFal && !!falReg;
+  const isAgensVideo = isExternalSelected ? String(externalProviderModel).toLowerCase().includes('agnes') : String(apiModel).toLowerCase().includes('agnes');
   const showGenericVideoControls = isExternalSelected || !isFal;
   const ratioOptions = isJimengSeedanceSelected
     ? ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
@@ -191,6 +192,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
   const progress: string = d?.progress || '';
   const localPrompt: string = d?.prompt || '';
   const promptMentions: MediaMention[] = Array.isArray(d?.promptMentions) ? d.promptMentions : [];
+  const videoMode: 'standard' | 'keyframes' = d?.videoMode || 'standard';
 
   // === 上游素材聚合 (跨节点统一机制) ===
   const upstream = useUpstreamMaterials(id);
@@ -296,7 +298,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
   // 收集上游 prompt + 参考图/视频/音频 (按用户拖拽顺序), 合并本地拖入素材
   const collectUpstream = (): { prompt: string; imageUrls: string[]; videoUrls: string[]; audioUrls: string[] } => {
     const prompts = orderedTexts.map((t) => t.url).filter((s) => !!s);
-    const upImageUrls = orderedImages.map((m) => m.url).filter((s) => !!s);
+    const upImageUrls = orderedImages.map((m) => m.remoteUrl || m.url).filter((s) => !!s);
     const upVideoUrls = orderedVideos.map((m) => m.url).filter((s) => !!s);
     const upAudioUrls = orderedAudios.map((m) => m.url).filter((s) => !!s);
     const dedupe = (items: string[]) => {
@@ -474,7 +476,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
             : `扩展平台视频提交: ${providerSelection.provider.label || providerSelection.provider.id} · ${providerModel} · refs=${refs.length}`,
           src,
         );
-        const r = await generateExternalVideo({
+        const requestPayload: any = {
           providerId: providerSelection.provider.id,
           providerModel,
           model: providerModel,
@@ -490,7 +492,13 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
           providerParams: isJimengSeedanceSelected
             ? { ...providerParams, frameMode: jimengSeedanceMode }
             : providerParams,
-        });
+        };
+
+        if (isAgensVideo && videoMode) {
+          requestPayload.mode = videoMode;
+        }
+
+        const r = await generateExternalVideo(requestPayload);
         const nextVideoUrl = r.videoUrls[0];
         if (!nextVideoUrl) throw new Error('扩展平台没有返回视频。');
         update({
@@ -1085,7 +1093,20 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
 
         {/* 比例(非 FAL 时显示原始控件) */}
         {showGenericVideoControls && (
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="grid grid-cols-2 gap-1.5 mb-1.5">
+          {isAgensVideo && (
+            <div>
+              <label className="text-[10px] text-white/50 block mb-1">视频模式</label>
+              <select
+                value={videoMode}
+                onChange={(e) => update({ videoMode: e.target.value })}
+                className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
+              >
+                <option value="standard" className="bg-zinc-900">标准模式 (单图/多图)</option>
+                <option value="keyframes" className="bg-zinc-900">智能关键帧模式</option>
+              </select>
+            </div>
+          )}
           <div>
             <label className="text-[10px] text-white/50 block mb-1">比例</label>
             <select
@@ -1116,62 +1137,40 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
         </div>
         )}
 
-        {/* 分辨率(仅 grok 非FAL) */}
-        {showGenericVideoControls && resolutionOptions.length > 0 && (
-          <div>
-            <label className="text-[10px] text-white/50 block mb-1">分辨率</label>
-            <select
-              value={resolution || resolutionOptions[0]}
-              onChange={(e) => update({ resolution: e.target.value })}
-              className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
-            >
-              {resolutionOptions.map((r) => (
-                <option key={r} value={r} className="bg-zinc-900">{r}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* veo 专用选项(非FAL) */}
-        {!isExternalSelected && !isFal && modelDef.kind === 'veo' && !isVeoOmni && (
-          <div className="grid grid-cols-2 gap-1.5">
-            <label className="flex items-center gap-1 text-[10px] text-white/60 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={enhancePrompt}
-                onChange={(e) => update({ enhancePrompt: e.target.checked })}
-                className="accent-rose-400"
-              />
-              Enhance Prompt
-            </label>
-            <label className="flex items-center gap-1 text-[10px] text-white/60 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={enableUpsample}
-                onChange={(e) => update({ enableUpsample: e.target.checked })}
-                className="accent-rose-400"
-              />
-              Upsample
-            </label>
-          </div>
-        )}
-
-        {/* Seed(非FAL) */}
         {showGenericVideoControls && (
-        <div>
-          <label className="text-[10px] text-white/50 block mb-1">Seed (0=随机)</label>
-          <input
-            type="number"
-            value={seed}
-            min={0}
-            max={2147483647}
-            onChange={(e) => update({ seed: Number(e.target.value) || 0 })}
-            className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
-          />
+        <div className="grid grid-cols-2 gap-1.5">
+          {/* 分辨率(仅 grok 非FAL) */}
+          {resolutionOptions.length > 0 && (
+            <div>
+              <label className="text-[10px] text-white/50 block mb-1">分辨率</label>
+              <select
+                value={resolution || resolutionOptions[0]}
+                onChange={(e) => update({ resolution: e.target.value })}
+                className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
+              >
+                {resolutionOptions.map((r) => (
+                  <option key={r} value={r} className="bg-zinc-900">{r}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Seed(非FAL) */}
+          <div>
+            <label className="text-[10px] text-white/50 block mb-1">Seed (0=随机)</label>
+            <input
+              type="number"
+              value={seed}
+              min={0}
+              max={2147483647}
+              onChange={(e) => update({ seed: Number(e.target.value) || 0 })}
+              className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
+            />
+          </div>
         </div>
         )}
 
-        {/* 上游素材聚合预览区 (代替原「参考图(上游)」计数提示) */}
+        {/* veo 专用选项(非FAL) */}
         {modelDef.supportImages && (
           <MaterialPreviewSection
             texts={orderedTexts}

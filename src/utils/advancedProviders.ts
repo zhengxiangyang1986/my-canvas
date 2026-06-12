@@ -217,8 +217,8 @@ export interface AdvancedProviderSelection {
   available: boolean;
 }
 
-const IMAGE_PROTOCOLS = new Set(['openai-compatible', 'modelscope', 'volcengine', 'comfyui', 'jimeng-cli']);
-const VIDEO_PROTOCOLS = new Set(['openai-compatible', 'volcengine', 'jimeng-cli']);
+const IMAGE_PROTOCOLS = new Set(['openai-compatible', 'modelscope', 'volcengine', 'comfyui', 'jimeng-cli', 'agens']);
+const VIDEO_PROTOCOLS = new Set(['openai-compatible', 'volcengine', 'jimeng-cli', 'agens']);
 const LLM_PROTOCOLS = new Set(['openai-compatible', 'modelscope', 'volcengine']);
 
 const FALLBACK_MODELS: Record<AdvancedProviderNodeKind, Partial<Record<string, string[]>>> = {

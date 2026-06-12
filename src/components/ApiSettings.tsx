@@ -92,6 +92,7 @@ const ADVANCED_PROVIDER_LABELS: Record<AdvancedProviderProtocol, string> = {
   volcengine: '火山引擎',
   comfyui: 'ComfyUI',
   'jimeng-cli': '即梦 CLI',
+  agens: 'Agens',
 };
 
 const ADVANCED_PROVIDER_GUIDES: Record<AdvancedProviderProtocol, {
@@ -144,6 +145,15 @@ const ADVANCED_PROVIDER_GUIDES: Record<AdvancedProviderProtocol, {
     nodeScopes: ['图像节点', '视频节点', 'SD2.0 节点'],
     connectionHint: '填写 dreamina 可执行文件路径；如果 CLI 装在 WSL 里，再打开 WSL 并填写发行版名称。',
     modelHint: '模型名按 CLI 支持的命令参数填写；图像可填 seedream-4.7，视频可填 seedance2.0fast_vip、seedance2.0_vip、seedance2.0fast、seedance2.0。每行一个。',
+  },
+  agens: {
+    subtitle: '接入 Agens 图像、视频与推理大模型',
+    description: '独立配置 Agens 模型，内置了全模态支持。',
+    nodeScopes: ['图像节点', '视频节点', 'LLM 节点'],
+    connectionHint: '填入 Agens 的 Base URL 和 API Key 即可。',
+    modelHint: '模型列表已内置（如 agnes-image-2.1-flash 等），直接保存即可。',
+    baseUrlPlaceholder: 'https://apihub.agnes-ai.com/v1',
+    keyLabel: 'Agens API Key',
   },
 };
 

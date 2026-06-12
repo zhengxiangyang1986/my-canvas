@@ -426,9 +426,9 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     // 主项目 gk_ratio(line 1410): 2:3 / 3:2 / 16:9 / 9:16 / 1:1
     ratios: ['2:3', '3:2', '16:9', '9:16', '1:1'],
     defaultRatio: '16:9',
-    // gk_duration(line 1412): 6 / 10 / 15 / 30
-    durations: [6, 10, 15, 30],
-    defaultDuration: 15,
+    // gk_duration(line 1412): 5 / 10 / 15 / 18 / 30
+    durations: [5, 10, 15, 18, 30],
+    defaultDuration: 10,
     // gk_resolution(line 1414): 480P / 720P
     resolutions: ['480P', '720P'],
     defaultResolution: '720P',

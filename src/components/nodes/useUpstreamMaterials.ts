@@ -37,6 +37,7 @@ export interface Material {
   label?: string;
   rhNodeId?: string;
   sourceNodeSerialId?: number;
+  remoteUrl?: string;
 }
 
 export interface UpstreamMaterials {
@@ -240,6 +241,7 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
       arr: Material[],
       keyOverride?: string,
       labelOverride?: string,
+      remoteUrl?: string,
     ) => {
       if (typeof v !== 'string') return;
       const s = v.trim();
@@ -254,6 +256,7 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
         sourceNodeId: sourceId,
         origin: 'upstream',
         label: labelOverride || (s.split('/').pop() || s).slice(0, 28),
+        remoteUrl,
       });
     };
 
@@ -326,19 +329,25 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
       }
 
       // 图像: 单 + 多
-      pushUrl(sid, 'image', ud.imageUrl, images);
+      pushUrl(sid, 'image', ud.imageUrl, images, undefined, undefined, ud.remoteImageUrl);
       const arrFields = ['imageUrls', 'urls', 'generatedImages'];
       for (const f of arrFields) {
         const v = ud[f];
         if (Array.isArray(v)) {
-          for (const u of v) pushUrl(sid, 'image', u, images);
+          const remotes = f === 'imageUrls' && Array.isArray(ud.remoteImageUrls) ? ud.remoteImageUrls : [];
+          for (let i = 0; i < v.length; i++) {
+            pushUrl(sid, 'image', v[i], images, undefined, undefined, remotes[i]);
+          }
         }
       }
 
       // 视频: 单 + 多 (v1.2.8.2: videoUrls 数组 — LoopNode 聚合多视频产物)
-      pushUrl(sid, 'video', ud.videoUrl, videos);
+      pushUrl(sid, 'video', ud.videoUrl, videos, undefined, undefined, ud.remoteVideoUrl);
       if (Array.isArray(ud.videoUrls)) {
-        for (const u of ud.videoUrls) pushUrl(sid, 'video', u, videos);
+        const remotes = Array.isArray(ud.remoteVideoUrls) ? ud.remoteVideoUrls : [];
+        for (let i = 0; i < ud.videoUrls.length; i++) {
+          pushUrl(sid, 'video', ud.videoUrls[i], videos, undefined, undefined, remotes[i]);
+        }
       }
 
       // === v1.2.9.14: Suno 双端口语义 (与 FramePair 同模式) ===
@@ -361,10 +370,13 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
       }
 
       // 音频 (audioUrl 主轨, audioUrl_1 副轨——AudioNode 双输出口, audioUrls 数组 — LoopNode 聚合)
-      pushUrl(sid, 'audio', ud.audioUrl, audios);
-      pushUrl(sid, 'audio', ud.audioUrl_1, audios);
+      pushUrl(sid, 'audio', ud.audioUrl, audios, undefined, undefined, ud.remoteAudioUrl);
+      pushUrl(sid, 'audio', ud.audioUrl_1, audios, undefined, undefined, ud.remoteAudioUrl_1);
       if (Array.isArray(ud.audioUrls)) {
-        for (const u of ud.audioUrls) pushUrl(sid, 'audio', u, audios);
+        const remotes = Array.isArray(ud.remoteAudioUrls) ? ud.remoteAudioUrls : [];
+        for (let i = 0; i < ud.audioUrls.length; i++) {
+          pushUrl(sid, 'audio', ud.audioUrls[i], audios, undefined, undefined, remotes[i]);
+        }
       }
     }
 

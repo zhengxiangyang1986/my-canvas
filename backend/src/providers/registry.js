@@ -61,6 +61,20 @@ const DEFAULT_VOLCENGINE_CHAT_MODELS = [
   'doubao-seed-1-6-250615',
 ];
 
+const DEFAULT_AGENS_BASE_URL = 'https://apihub.agnes-ai.com/v1';
+
+const DEFAULT_AGENS_IMAGE_MODELS = [
+  'agnes-image-2.1-flash',
+];
+
+const DEFAULT_AGENS_VIDEO_MODELS = [
+  'agnes-video-v2.0',
+];
+
+const DEFAULT_AGENS_CHAT_MODELS = [
+  'agnes-2.0-flash',
+];
+
 const DEFAULT_JIMENG_IMAGE_MODELS = [
   'seedream-4.7',
   'seedream-4.6',
@@ -85,6 +99,7 @@ const SUPPORTED_PROTOCOLS = new Set([
   'volcengine',
   'comfyui',
   'jimeng-cli',
+  'agens',
 ]);
 
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{1,47}$/;
@@ -137,6 +152,21 @@ const DEFAULT_ADVANCED_PROVIDERS = [
     volcengineConfig: {
       project: 'default',
       region: 'cn-beijing',
+    },
+  },
+  {
+    id: 'agens',
+    label: 'Agens',
+    protocol: 'agens',
+    baseUrl: DEFAULT_AGENS_BASE_URL,
+    enabled: false,
+    imageModels: DEFAULT_AGENS_IMAGE_MODELS,
+    videoModels: DEFAULT_AGENS_VIDEO_MODELS,
+    chatModels: DEFAULT_AGENS_CHAT_MODELS,
+    defaults: {
+      imageModel: DEFAULT_AGENS_IMAGE_MODELS[0],
+      videoModel: DEFAULT_AGENS_VIDEO_MODELS[0],
+      chatModel: DEFAULT_AGENS_CHAT_MODELS[0],
     },
   },
   {
@@ -461,6 +491,18 @@ function normalizeProvider(raw, previous = null) {
     };
   }
 
+  if (id === 'agens' && protocol === 'agens') {
+    provider.imageModels = mergeModelLists(DEFAULT_AGENS_IMAGE_MODELS, provider.imageModels);
+    provider.videoModels = mergeModelLists(DEFAULT_AGENS_VIDEO_MODELS, provider.videoModels);
+    provider.chatModels = mergeModelLists(DEFAULT_AGENS_CHAT_MODELS, provider.chatModels);
+    provider.defaults = {
+      imageModel: DEFAULT_AGENS_IMAGE_MODELS[0],
+      videoModel: DEFAULT_AGENS_VIDEO_MODELS[0],
+      chatModel: DEFAULT_AGENS_CHAT_MODELS[0],
+      ...provider.defaults,
+    };
+  }
+
   if (protocol === 'volcengine') {
     provider.volcengineConfig = normalizeVolcengineConfig(raw.volcengineConfig || raw.volcengine_config, previousConfig.volcengineConfig);
   }
@@ -562,6 +604,10 @@ module.exports = {
   DEFAULT_VOLCENGINE_BASE_URL,
   DEFAULT_JIMENG_IMAGE_MODELS,
   DEFAULT_JIMENG_VIDEO_MODELS,
+  DEFAULT_AGENS_BASE_URL,
+  DEFAULT_AGENS_IMAGE_MODELS,
+  DEFAULT_AGENS_VIDEO_MODELS,
+  DEFAULT_AGENS_CHAT_MODELS,
   SUPPORTED_PROTOCOLS,
   getEnabledAdvancedProviders,
   maskAdvancedProviders,

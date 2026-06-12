@@ -105,7 +105,8 @@ export type AdvancedProviderProtocol =
   | 'modelscope'
   | 'volcengine'
   | 'comfyui'
-  | 'jimeng-cli';
+  | 'jimeng-cli'
+  | 'agens';
 
 export interface AdvancedProviderConfig {
   id: string;
