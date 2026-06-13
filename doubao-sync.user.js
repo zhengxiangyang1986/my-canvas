@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         T8-Canvas Doubao Bridge (Stealth V3)
+// @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.0.6
+// @version      5.1.0
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
