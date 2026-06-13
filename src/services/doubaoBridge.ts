@@ -72,7 +72,7 @@ export async function executeDoubaoBridgeGeneration(options: {
   // 2. 提交任务
   const submit = await submitBridgeTask({
     prompt,
-    model,
+    model: nodeType === 'video' ? 'video' : model,
     images: base64Array,
   });
 
