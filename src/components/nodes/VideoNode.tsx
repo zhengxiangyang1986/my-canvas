@@ -111,6 +111,26 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
     return () => window.removeEventListener('bridge-raw-urls', handleRawUrls);
   }, [(data as any)?.taskId, update]);
 
+  // 刷新断线重连（主动追溯）：如果挂载时发现有 taskId 且还没收到视频，主动查岗一次
+  useEffect(() => {
+    const currentTaskId = (data as any)?.taskId;
+    const remoteUrl = (data as any)?.remoteUrl;
+    if (currentTaskId && !remoteUrl) {
+      fetch(`/api/bridge/inbox/${currentTaskId}`)
+        .then(r => r.json())
+        .then(res => {
+          if (res.success) {
+            if (Array.isArray(res.rawUrls) && res.rawUrls.length > 0) {
+              update({ remoteUrl: res.rawUrls[0], progress: '100%', status: 'completed' });
+            } else if (Array.isArray(res.urls) && res.urls.length > 0) {
+              update({ remoteUrl: res.urls[0], progress: '100%', status: 'completed' });
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
+
   const src = `video:${id.slice(0, 6)}`;
 
   // 主题适配 (默认科技风深色, 传递给聚合预览区)

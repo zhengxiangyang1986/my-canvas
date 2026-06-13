@@ -99,9 +99,9 @@
   // ============================================================
   let isAutoSyncEnabled = GM_getValue('autoSync', true);
   let isPolling = false;
-  let currentTaskId = null;
-  let currentTaskModel = null; // 【新增】保存当前任务是生图还是生视频
-  let lastActiveTaskId = null; // 【新增】永远记住最近一次成功领取的画布任务ID
+  let currentTaskId = localStorage.getItem('doubao_currentTaskId') || null;
+  let currentTaskModel = localStorage.getItem('doubao_currentTaskModel') || null;
+  let lastActiveTaskId = localStorage.getItem('doubao_lastActiveTaskId') || null;
   let taskTimeoutTimer = null;
   let interactionInProgress = false; // 互斥锁：主流程执行中禁止抓图
   const processedImages = new Set();
@@ -268,7 +268,7 @@
 
 
   // ============================================================
-  // 防风控核心：拟人化时间引擎
+  // 防风控：拟人化时间引擎
   // ============================================================
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -449,6 +449,8 @@
   function clearTaskState() {
     currentTaskId = null;
     currentTaskModel = null;
+    localStorage.removeItem('doubao_currentTaskId');
+    localStorage.removeItem('doubao_currentTaskModel');
     interactionInProgress = false;
     if (taskTimeoutTimer) {
       clearTimeout(taskTimeoutTimer);
@@ -687,10 +689,13 @@
 
   async function handleTask(task) {
     currentTaskId = task.id;
-    lastActiveTaskId = task.id; 
+    lastActiveTaskId = task.id;
+    localStorage.setItem('doubao_currentTaskId', currentTaskId);
+    localStorage.setItem('doubao_lastActiveTaskId', lastActiveTaskId);
     interactionInProgress = true; 
     const { prompt, images, model } = task.payload;
     currentTaskModel = model; // 保存模型身份（生图 vs 生视频）
+    localStorage.setItem('doubao_currentTaskModel', currentTaskModel);
 
     // 快照当前页面所有图片
     snapshotAllImages();

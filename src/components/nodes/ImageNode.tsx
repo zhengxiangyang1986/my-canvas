@@ -180,6 +180,26 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
     window.addEventListener('bridge-raw-urls', handleRawUrls);
     return () => window.removeEventListener('bridge-raw-urls', handleRawUrls);
   }, [(data as any)?.taskId, update]);
+
+  // 刷新断线重连（主动追溯）：如果挂载时发现有 taskId 且还没收到图片，主动查岗一次
+  useEffect(() => {
+    const currentTaskId = (data as any)?.taskId;
+    const remoteImageUrls = (data as any)?.remoteImageUrls;
+    if (currentTaskId && (!remoteImageUrls || remoteImageUrls.length === 0)) {
+      fetch(`/api/bridge/inbox/${currentTaskId}`)
+        .then(r => r.json())
+        .then(res => {
+          if (res.success) {
+            if (Array.isArray(res.rawUrls) && res.rawUrls.length > 0) {
+              update({ remoteImageUrls: res.rawUrls, progress: '100%', status: 'completed' });
+            } else if (Array.isArray(res.urls) && res.urls.length > 0) {
+              update({ remoteImageUrls: res.urls, progress: '100%', status: 'completed' });
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
   const d = data as any;
   const model = d?.model || IMAGE_MODELS[0].id;
   const modelDef = useMemo(() => IMAGE_MODELS.find((m) => m.id === model) || IMAGE_MODELS[0], [model]);
