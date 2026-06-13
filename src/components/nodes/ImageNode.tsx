@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from 'react';
+import { memo, useMemo, useRef, useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { AlertCircle, Image as ImageIcon, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import { useUpstreamMaterials, type Material } from './useUpstreamMaterials';
@@ -167,6 +167,19 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
   const mjUploadKindRef = useRef<'sref' | 'oref'>('sref');
 
   const [error, setError] = useState<string | null>(null);
+
+  // 监听后台透传（桥接模式）推送的本地落盘原图链接
+  useEffect(() => {
+    const handleRawUrls = (e: any) => {
+      const { taskId: incomingTaskId, rawUrls } = e.detail;
+      const currentTaskId = (data as any)?.taskId;
+      if (currentTaskId && incomingTaskId === currentTaskId && Array.isArray(rawUrls) && rawUrls.length > 0) {
+        update({ remoteImageUrls: rawUrls });
+      }
+    };
+    window.addEventListener('bridge-raw-urls', handleRawUrls);
+    return () => window.removeEventListener('bridge-raw-urls', handleRawUrls);
+  }, [(data as any)?.taskId, update]);
   const d = data as any;
   const model = d?.model || IMAGE_MODELS[0].id;
   const modelDef = useMemo(() => IMAGE_MODELS.find((m) => m.id === model) || IMAGE_MODELS[0], [model]);
@@ -579,6 +592,22 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
       // collectUpstream 已返回「本地上传 + 上游接入」按用户拖拽顺序合并后的列表,
       // 这里不再二次叠加 refImages, 避免本地参考图重复传递。
       const allRefs = upstreamImages.slice(0, maxRefs);
+
+      // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
+      if (apiModel === 'web-agent-doubao') {
+        const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
+        return await executeDoubaoBridgeGeneration({
+          prompt: finalPrompt,
+          images: allRefs,
+          model: apiModel,
+          onUpdate: update,
+          id,
+          logBus,
+          taskCompletionSound,
+          nodeType: 'image'
+        });
+      }
+      // ====================================================
 
       if (isExternalSelected && providerSelection.provider) {
         const providerModel = externalProviderModel;

@@ -88,6 +88,11 @@ app.use('/api/cloud-uploads', cloudUploadsRouter);
 app.use('/api/parsehub', parseHubRouter);
 app.use('/api/achievements', achievementsRouter);
 app.use('/api/topaz', topazRouter);
+
+// ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
+app.use('/api/bridge', require('./routes/bridge'));
+// ====================================================
+
 registerLocalExtensions(app, { config, express, logger: console, hooks: localHooks });
 
 // ========== 前端静态资源(仅打包模式) ==========

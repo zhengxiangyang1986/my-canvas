@@ -97,6 +97,20 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
   const { getEdges, getNodes } = useReactFlow();
   const [error, setError] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
+
+  // 监听后台透传（桥接模式）推送的本地落盘原视频链接
+  useEffect(() => {
+    const handleRawUrls = (e: any) => {
+      const { taskId: incomingTaskId, rawUrls } = e.detail;
+      const currentTaskId = (data as any)?.taskId;
+      if (currentTaskId && incomingTaskId === currentTaskId && Array.isArray(rawUrls) && rawUrls.length > 0) {
+        update({ remoteUrl: rawUrls[0] });
+      }
+    };
+    window.addEventListener('bridge-raw-urls', handleRawUrls);
+    return () => window.removeEventListener('bridge-raw-urls', handleRawUrls);
+  }, [(data as any)?.taskId, update]);
+
   const src = `video:${id.slice(0, 6)}`;
 
   // 主题适配 (默认科技风深色, 传递给聚合预览区)
@@ -465,6 +479,22 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
     taskCompletionSound.primeAudio();
     update({ status: 'submitting', error: null, videoUrl: null, taskId: null });
     try {
+      // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
+      if (apiModel === 'web-agent-doubao') {
+        const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
+        return await executeDoubaoBridgeGeneration({
+          prompt: finalPrompt,
+          images: imageUrls.slice(0, Math.max(1, maxMentionRefs || modelDef.maxRefImages || 8)),
+          model: apiModel,
+          onUpdate: update,
+          id,
+          logBus,
+          taskCompletionSound,
+          nodeType: 'video'
+        });
+      }
+      // ====================================================
+
       if (isExternalSelected && providerSelection.provider) {
         const providerModel = externalProviderModel;
         const refs = imageUrls.slice(0, Math.max(1, maxMentionRefs || modelDef.maxRefImages || 8));

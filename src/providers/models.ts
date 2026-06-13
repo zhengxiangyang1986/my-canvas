@@ -165,6 +165,27 @@ export const IMAGE_MODELS: ImageModelDef[] = [
     maxReferenceImages: 4, // sref + oref(各 2 张)
     description: 'Midjourney v8.1 / niji 7 等',
   },
+  // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
+  {
+    id: 'web-agent-doubao',
+    apiModel: 'web-agent-doubao',
+    label: 'Doubao (Tampermonkey中转)',
+    tabLabel: 'Doubao',
+    provider: 'zhenzhen',
+    paramKind: 'grok-image',
+    capabilities: ['t2i', 'i2i'],
+    apiModelOptions: [
+      { value: 'web-agent-doubao', label: 'web-agent-doubao' },
+    ],
+    aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'],
+    defaultAspectRatio: '1:1',
+    sizes: [],
+    defaultSize: '',
+    supportsReference: true,
+    maxReferenceImages: 1,
+    description: '通过油猴脚本调用 Doubao 网页端',
+  },
+  // ====================================================
 ];
 
 // ========================================================================
@@ -482,6 +503,22 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     supportImages: true,
     maxRefImages: 3,
   },
+  // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
+  {
+    id: 'web-agent-doubao',
+    label: 'Doubao Video (Tampermonkey)',
+    kind: 'veo',
+    provider: 'zhenzhen',
+    description: '通过油猴脚本生成 Doubao 视频',
+    apiModelOptions: [{ value: 'web-agent-doubao', label: 'web-agent-doubao' }],
+    ratios: ['16:9', '9:16', '1:1'],
+    defaultRatio: '16:9',
+    durations: [5],
+    defaultDuration: 5,
+    supportImages: true,
+    maxRefImages: 1,
+  },
+  // ====================================================
 ];
 
 // ========== 音频(Suno) ==========

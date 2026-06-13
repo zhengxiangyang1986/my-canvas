@@ -27,6 +27,7 @@ import { workflowManifestToFragment } from './utils/workflowResource';
 import { matchesAnyShortcut } from './utils/keyboardShortcuts';
 import { portraitResourceToNodeData } from './utils/portraitResource';
 import { LocalModalSlot, LocalTopbarSlot } from 'virtual:t8-local-extensions';
+import DoubaoBridgeListener from './components/extensions/DoubaoBridgeListener';
 
 const Canvas = lazy(() => import('./components/Canvas'));
 const ApiSettingsModal = lazy(() => import('./components/ApiSettings'));
@@ -561,6 +562,7 @@ function App() {
   return (
     <RHToolsProvider>
     <AchievementTracker />
+    <DoubaoBridgeListener />
     <div
       className={`t8-app-shell h-screen flex flex-col overflow-hidden ${
         isPixel ? '' : isDark ? 'bg-zinc-950 text-white' : 'bg-zinc-50 text-zinc-900'

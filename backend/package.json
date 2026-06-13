@@ -9,6 +9,7 @@
     "dev": "node src/server.js"
   },
   "dependencies": {
+    "chokidar": "^5.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "multer": "^2.0.2",
