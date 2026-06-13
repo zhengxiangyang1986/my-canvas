@@ -319,13 +319,14 @@ function processDownloadedFile(filePath, taskId) {
     if (currentRecord && currentRecord.urls && currentRecord.urls.length > 0) {
       // 满足用户意愿：如果有下载的新图，直接物理覆盖保存之前的老图
       const mediaUrl = currentRecord.urls[0];
-      const mediaFilename = mediaUrl.split('/').pop();
+      const cleanMediaUrl = mediaUrl.split('?')[0];
+      const mediaFilename = cleanMediaUrl.split('/').pop();
       if (mediaFilename) {
         const mediaFilePath = path.join(config.OUTPUT_DIR, mediaFilename);
         fs.copyFileSync(filePath, mediaFilePath);
         console.log(`[Watchdog] 遵循指令：物理覆盖老图 ${mediaFilename}`);
         // 核心：加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
-        finalUrl = `${mediaUrl}?t=${ts}`;
+        finalUrl = `${cleanMediaUrl}?t=${ts}`;
       } else {
         const filename = `bridge_raw_${taskId}_${ts}${ext}`;
         const targetPath = path.join(config.OUTPUT_DIR, filename);
