@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.3.0
+// @version      5.4.1
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -543,15 +543,15 @@
     }
   }
 
-  // --- 碎片化仿生打字引擎 ---
+  // --- 极速引擎（保留 5.3.0 原版逻辑但去除所有降速模拟） ---
   async function simulateHumanTyping(element, text) {
     element.focus();
-    await randomDelay(200, 500); // 开始打字前的犹豫
+    await randomDelay(50, 100);
 
     let i = 0;
     while (i < text.length) {
-      // 极慢模式：每次写入 1~2 个字符
-      const chunkSize = Math.floor(Math.random() * 2) + 1;
+      // 改为极大块一次性输入，实现粘贴效果
+      const chunkSize = text.length;
       const chunk = text.slice(i, i + chunkSize);
 
       const success = document.execCommand('insertText', false, chunk);
@@ -564,18 +564,14 @@
 
         const tracker = element._valueTracker;
         if (tracker) tracker.setValue('');
+        
+        // 【保险兜底】由于我们去掉了逐字输入，如果一次性粘贴被浏览器拦截，直接强制赋值
+        element.value = element.value + chunk;
         element.dispatchEvent(new Event('input', { bubbles: true }));
       }
 
       i += chunk.length;
-
-      // 12% 概率触发"思考/喝水"长停顿
-      if (Math.random() < 0.12) {
-        await randomDelay(1000, 2500); // 1~2.5秒长停顿
-      } else {
-        // 正常击键间隙大幅拉长：150~450 毫秒
-        await randomDelay(150, 450);
-      }
+      await sleep(10); // 极短的底层缓冲
     }
   }
 
