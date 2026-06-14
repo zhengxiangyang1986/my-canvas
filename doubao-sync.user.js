@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.1
+// @version      5.4.2
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -565,8 +565,12 @@
         const tracker = element._valueTracker;
         if (tracker) tracker.setValue('');
         
-        // 【保险兜底】由于我们去掉了逐字输入，如果一次性粘贴被浏览器拦截，直接强制赋值
-        element.value = element.value + chunk;
+        // 【保险兜底】防患于未然：兼容未来的 contenteditable 富文本结构
+        if ('value' in element) {
+          element.value = (element.value || '') + chunk;
+        } else {
+          element.textContent = (element.textContent || '') + chunk;
+        }
         element.dispatchEvent(new Event('input', { bubbles: true }));
       }
 
@@ -940,8 +944,11 @@
         } else {
           const itemContainer = el.closest('[class*="video-box"], [class*="video-wrapper"], .flex') || container;
           if (itemContainer) {
-            // 视频专属按钮选择器：需定位到 group 内真正的 action-button 才能触发下载
-            downloadBtn = itemContainer.querySelector('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+            // 视频专属按钮选择器：防患于未然，抓取所有按钮取最后一个，防止未来出现"分享"干扰
+            const vBtns = itemContainer.querySelectorAll('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+            if (vBtns.length > 0) {
+              downloadBtn = vBtns[vBtns.length - 1];
+            }
           }
         }
 
