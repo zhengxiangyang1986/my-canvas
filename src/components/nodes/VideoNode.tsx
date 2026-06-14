@@ -104,7 +104,10 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       const { taskId: incomingTaskId, rawUrls } = e.detail;
       const currentTaskId = (data as any)?.taskId;
       if (currentTaskId && incomingTaskId === currentTaskId && Array.isArray(rawUrls) && rawUrls.length > 0) {
-        update({ remoteUrl: rawUrls[0] });
+        update({ 
+          remoteUrl: rawUrls[0],
+          videoUrl: rawUrls[0] 
+        });
       }
     };
     window.addEventListener('bridge-raw-urls', handleRawUrls);
@@ -121,9 +124,9 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
         .then(res => {
           if (res.success) {
             if (Array.isArray(res.rawUrls) && res.rawUrls.length > 0) {
-              update({ remoteUrl: res.rawUrls[0], progress: '100%', status: 'completed' });
+              update({ remoteUrl: res.rawUrls[0], videoUrl: res.rawUrls[0], progress: '100%', status: 'completed' });
             } else if (Array.isArray(res.urls) && res.urls.length > 0) {
-              update({ remoteUrl: res.urls[0], progress: '100%', status: 'completed' });
+              update({ remoteUrl: res.urls[0], videoUrl: res.urls[0], progress: '100%', status: 'completed' });
             }
           }
         })

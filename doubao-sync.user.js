@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.1.0
+// @version      5.3.0
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -579,29 +579,17 @@
     }
   }
 
-  // --- 发送（优先点击按钮 → Enter 兜底） ---
+  // --- 发送（纯净防风控：仅模拟回车键发送，永不点击按钮） ---
   async function simulateSend(inputBox) {
-    const sendBtn = findSendButton(inputBox);
-
-    if (sendBtn && !sendBtn.disabled) {
-      // 鼠标先移向按钮
-      await simulateMouseApproach(sendBtn);
-
-      sendBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-      await randomDelay(50, 120);
-      sendBtn.click();
-      log('Sent via button click.');
-    } else {
-      // 降级：模拟物理按下回车键
-      const keyProps = {
-        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-        bubbles: true, cancelable: true
-      };
-      inputBox.dispatchEvent(new KeyboardEvent('keydown', keyProps));
-      await sleep(40 + Math.random() * 60);
-      inputBox.dispatchEvent(new KeyboardEvent('keyup', keyProps));
-      log('Sent via Enter key.');
-    }
+    log('Sending message via simulated Enter key...');
+    const keyProps = {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+      bubbles: true, cancelable: true
+    };
+    inputBox.dispatchEvent(new KeyboardEvent('keydown', keyProps));
+    await sleep(40 + Math.random() * 60);
+    inputBox.dispatchEvent(new KeyboardEvent('keyup', keyProps));
+    log('Sent via Enter key.');
   }
 
   function findSendButton(inputBox) {
@@ -713,12 +701,8 @@
         throw new Error(`Selector outdated (v${DOM_SELECTORS.version}): input not found.`);
       }
 
-      // --- 步骤0：前置开启网络嗅探雷达 --- //
-      let uploadSniffer = null;
-      if (images && images.length > 0) {
-        log(`Starting network sniffer for ${images.length} incoming images...`);
-        uploadSniffer = createUploadSniffer(images.length);
-      }
+      // --- 步骤0：标记含图任务 --- //
+      const hasImages = (images && images.length > 0);
 
       // --- 步骤1：触发文件注入 --- //
       if (images && images.length > 0) {
@@ -752,11 +736,11 @@
       await simulateHumanTyping(inputBox, prompt || 'Hello');
       await humanHesitation();
 
-      // --- 步骤2.5：验收底层网络状态 ---
-      if (uploadSniffer) {
-        log('Awaiting network layer confirmation...');
-        await uploadSniffer.wait(25000);
-        log('Network clear. Waiting randomly for UI finalize...');
+      // --- 步骤2.5：视觉层嗅探，死磕上传指示器 ---
+      if (hasImages) {
+        log('Awaiting DOM visual layer confirmation for upload completion...');
+        await waitForUploadComplete();
+        log('DOM indicates upload is clear. Waiting randomly for UI finalize...');
         await randomDelay(1000, 2000);
       }
 
@@ -786,6 +770,48 @@
       });
       log('Snapshot media. Set size:', processedImages.size);
     } catch (e) { /* 静默 */ }
+  }
+
+  // ============================================================
+  // 视觉底板嗅探器 (精准等待图片上传完成)
+  // ============================================================
+  async function waitForUploadComplete() {
+    const MAX_WAIT_MS = 30000;
+    const intervalMs = 1000;
+    let elapsed = 0;
+
+    // 核心缺陷修复：给前端 React 框架留出渲染进度圆圈的喘息时间
+    // 否则刚注入图片，DOM 还没来得及长出圆圈，就会被错误地秒判通过！
+    log('Waiting 1000ms for Doubao UI to mount upload progress circles...');
+    await sleep(1000);
+
+    while (elapsed < MAX_WAIT_MS) {
+      // 根据用户提供的真实 DOM 结构精准狙击：
+      const loadingIndicators = document.querySelectorAll(
+        '.semi-progress-circle-text, .semi-progress-circle-ring-inner, [class*="progress-circle"]'
+      );
+      
+      let isLoading = false;
+      for (const el of loadingIndicators) {
+        const style = window.getComputedStyle(el);
+        if (style.display !== 'none' && style.opacity !== '0' && style.visibility !== 'hidden') {
+          isLoading = true;
+          break;
+        }
+      }
+
+      if (!isLoading) {
+        log(`No visible progress elements found. Wait considered complete after ${elapsed}ms.`);
+        return true;
+      }
+      
+      log(`Still uploading... DOM semi-progress-circle detected. (${elapsed}ms elapsed)`);
+      await sleep(intervalMs);
+      elapsed += intervalMs;
+    }
+    
+    log(`Warning: Wait for upload timed out after ${MAX_WAIT_MS}ms. Forcing proceed.`);
+    return false;
   }
 
   // ============================================================
@@ -878,8 +904,9 @@
 
         const isVideo = el.tagName === 'VIDEO';
 
-        // 核心：防视频封面图误伤过滤！如果这是一个生视频任务，绝对不处理任何图片（即使是封面图）
+        // 核心：防异种媒体混淆！严格的类型双向隔离！
         if (currentTaskModel === 'video' && !isVideo) continue;
+        if (currentTaskModel !== 'video' && isVideo) continue;
 
         if (!isVideo) {
           if (!el.complete) {
@@ -904,26 +931,35 @@
           log(`[Agent] Imprinted media card with taskId: ${currentTaskId}`);
         }
 
-        // 【物理原图截获优先通道】针对图片：不再推送缩略图 URL，而是直接点击原图下载按钮，转交后端物理 Watchdog 打捞
+        // 【物理原媒体截获优先通道】针对图片和视频，分别进行严密的 DOM 选择器寻址，点击原生下载按钮转交看门狗打捞
+        let downloadBtn = null;
         if (!isVideo) {
           const itemContainer = el.closest('[class*="image-box"]') || container;
           if (itemContainer) {
             const btns = itemContainer.querySelectorAll('[class*="hover-show-tag"] > div:not([class*="divider"])');
             if (btns.length > 0) {
-              const downloadBtn = btns[btns.length - 1]; // 最后一个是下载按钮
-              
-              if (isAutoSyncEnabled) {
-                log(`[High-Res] Auto Sync ON: Auto clicking download button for high-res...`);
-                processedImages.add(url);
-                downloadBtn.click(); // 触发豆包原生下载 -> 后端 Watchdog 接收
-                clearTaskState();
-                return true;
-              } else {
-                log(`[High-Res] Auto Sync OFF: 图片已加烙印。挂起等待用户手动点击下载...`);
-                processedImages.add(url);
-                continue; // 跳过当前循环，保留任务状态和打上的烙印
-              }
+              downloadBtn = btns[btns.length - 1]; // 图片的最后一个通常是下载按钮
             }
+          }
+        } else {
+          const itemContainer = el.closest('[class*="video-box"], [class*="video-wrapper"], .flex') || container;
+          if (itemContainer) {
+            // 视频专属按钮选择器：需定位到 group 内真正的 action-button 才能触发下载
+            downloadBtn = itemContainer.querySelector('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+          }
+        }
+
+        if (downloadBtn) {
+          if (isAutoSyncEnabled) {
+            log(`[Physical Media] Auto Sync ON: Auto clicking download button for ${isVideo ? 'video' : 'image'}...`);
+            processedImages.add(url);
+            downloadBtn.click(); // 触发豆包原生下载 -> 后端 Watchdog 接收
+            clearTaskState();
+            return true;
+          } else {
+            log(`[Physical Media] Auto Sync OFF: 媒体已加烙印。挂起等待用户手动点击下载...`);
+            processedImages.add(url);
+            continue; // 跳过当前循环，保留任务状态和打上的烙印
           }
         }
 

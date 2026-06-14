@@ -174,7 +174,11 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
       const { taskId: incomingTaskId, rawUrls } = e.detail;
       const currentTaskId = (data as any)?.taskId;
       if (currentTaskId && incomingTaskId === currentTaskId && Array.isArray(rawUrls) && rawUrls.length > 0) {
-        update({ remoteImageUrls: rawUrls });
+        update({ 
+          remoteImageUrls: rawUrls,
+          imageUrl: rawUrls[0],
+          imageUrls: rawUrls
+        });
       }
     };
     window.addEventListener('bridge-raw-urls', handleRawUrls);
@@ -191,9 +195,21 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
         .then(res => {
           if (res.success) {
             if (Array.isArray(res.rawUrls) && res.rawUrls.length > 0) {
-              update({ remoteImageUrls: res.rawUrls, progress: '100%', status: 'completed' });
+              update({ 
+                remoteImageUrls: res.rawUrls, 
+                imageUrl: res.rawUrls[0],
+                imageUrls: res.rawUrls,
+                progress: '100%', 
+                status: 'completed' 
+              });
             } else if (Array.isArray(res.urls) && res.urls.length > 0) {
-              update({ remoteImageUrls: res.urls, progress: '100%', status: 'completed' });
+              update({ 
+                remoteImageUrls: res.urls, 
+                imageUrl: res.urls[0],
+                imageUrls: res.urls,
+                progress: '100%', 
+                status: 'completed' 
+              });
             }
           }
         })

@@ -316,24 +316,24 @@ function processDownloadedFile(filePath, taskId) {
     let finalUrl = "";
     const ts = Date.now();
 
-    if (currentRecord && currentRecord.urls && currentRecord.urls.length > 0) {
-      // 满足用户意愿：如果有下载的新图，直接物理覆盖保存之前的老图
-      const mediaUrl = currentRecord.urls[0];
-      const cleanMediaUrl = mediaUrl.split('?')[0];
-      const mediaFilename = cleanMediaUrl.split('/').pop();
-      if (mediaFilename) {
-        const mediaFilePath = path.join(config.OUTPUT_DIR, mediaFilename);
-        fs.copyFileSync(filePath, mediaFilePath);
-        console.log(`[Watchdog] 遵循指令：物理覆盖老图 ${mediaFilename}`);
-        // 核心：加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
-        finalUrl = `${cleanMediaUrl}?t=${ts}`;
-      } else {
-        const filename = `bridge_raw_${taskId}_${ts}${ext}`;
-        const targetPath = path.join(config.OUTPUT_DIR, filename);
-        fs.copyFileSync(filePath, targetPath);
-        finalUrl = `http://127.0.0.1:18766/output/${filename}`;
-      }
+    // 不再依赖脆弱的内存 urls 记录，直接暴力扫描物理磁盘寻找相同 taskId 的老图
+    let oldFilename = null;
+    try {
+      const filesInOutput = fs.readdirSync(config.OUTPUT_DIR);
+      oldFilename = filesInOutput.find(f => f.startsWith(`bridge_raw_${taskId}_`));
+    } catch (e) {
+      console.warn(`[Watchdog] 扫描输出目录失败:`, e.message);
+    }
+
+    if (oldFilename) {
+      // 找到了这个任务之前的图，直接物理覆盖
+      const mediaFilePath = path.join(config.OUTPUT_DIR, oldFilename);
+      fs.copyFileSync(filePath, mediaFilePath);
+      console.log(`[Watchdog] 遵循指令：通过磁盘扫描强制物理覆盖老图 ${oldFilename}`);
+      // 核心：加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
+      finalUrl = `http://127.0.0.1:18766/output/${oldFilename}?t=${ts}`;
     } else {
+      // 没找到任何相关图，这是该任务的第一张新图
       const filename = `bridge_raw_${taskId}_${ts}${ext}`;
       const targetPath = path.join(config.OUTPUT_DIR, filename);
       fs.copyFileSync(filePath, targetPath);
@@ -366,7 +366,7 @@ function processDownloadedFile(filePath, taskId) {
 
 const watcher = chokidar.watch(downloadsPath, {
   ignored: /(^|[\/\\])\../, persistent: true, ignoreInitial: true,
-  awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 100 }
+  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 }
 });
 
 watcher.on('add', (filePath) => {
