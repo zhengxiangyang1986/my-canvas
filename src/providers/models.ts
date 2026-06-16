@@ -182,7 +182,7 @@ export const IMAGE_MODELS: ImageModelDef[] = [
     sizes: [],
     defaultSize: '',
     supportsReference: true,
-    maxReferenceImages: 1,
+    maxReferenceImages: 9,
     description: '通过油猴脚本调用 Doubao 网页端',
   },
   // ====================================================
@@ -516,7 +516,7 @@ export const VIDEO_MODELS: VideoModelDef[] = [
     durations: [5],
     defaultDuration: 5,
     supportImages: true,
-    maxRefImages: 1,
+    maxRefImages: 9,
   },
   // ====================================================
 ];

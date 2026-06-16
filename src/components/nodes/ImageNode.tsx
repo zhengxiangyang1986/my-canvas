@@ -632,8 +632,9 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
       // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
       if (apiModel === 'web-agent-doubao') {
         const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
+        const promptWithSettings = finalPrompt;
         return await executeDoubaoBridgeGeneration({
-          prompt: finalPrompt,
+          prompt: promptWithSettings,
           images: allRefs,
           model: apiModel,
           onUpdate: update,

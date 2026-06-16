@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.2
+// @version      5.4.19
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -21,7 +21,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
   'use strict';
 
   // ============================================================
@@ -55,7 +55,7 @@
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({ level: 'info', message: msg })
       });
-    } catch (e) {}
+    } catch (e) { }
 
     // 如果网页调试端开启了，也向网页输出
     if (typeof debugLog === 'function') debugLog(`<span style="color:#aaa;">${msg}</span>`);
@@ -67,7 +67,13 @@
   const DOM_SELECTORS = {
     version: '2026.06',
     inputBox: [
+      'textarea[placeholder*="描述"]',
+      '[contenteditable="true"][placeholder*="描述"]',
+      '#semi-input-textarea-autosize',
       'textarea[data-testid="chat-input"]',
+      'textarea[placeholder*="消息"]',
+      '.semi-input-textarea',
+      '.chat-input textarea',
       '#chat-input',
       'textarea[placeholder*="输入"]',
       'textarea',
@@ -75,7 +81,9 @@
     ],
     // 发送按钮选择器（优先级从高到低）
     sendButton: [
+      '#flow-end-msg-send',
       'button[data-testid="send-button"]',
+      '[id*="send-msg-btn"]',
       'button[type="submit"]',
       'form button:last-of-type'
     ],
@@ -154,7 +162,7 @@
       zIndex: '9999999',
       border: '1px solid #0f0',
       display: 'none',
-      pointerEvents: 'none'
+      pointerEvents: 'auto'
     });
     document.body.appendChild(debugPanel);
 
@@ -201,13 +209,25 @@
     // 逆向遍历寻找带有 taskId 烙印的祖先元素
     let el = e.target;
     let foundTaskId = null;
-    let limit = 15; // 搜索深度
+    let limit = 8; // 搜索深度
 
+    // 【冒泡+向下探测法】：因为下载按钮通常和图片是同级兄弟节点的后代，单独向上找是找不到 <img> 的。
+    // 我们一层层往上冒泡，在每一层的容器里寻找有没有带烙印的图片。由于是由内向外找，保证能找到最近的那张图！
     while (el && el !== document.body && limit > 0) {
       if (mediaTaskMap.has(el)) {
         foundTaskId = mediaTaskMap.get(el);
         break;
       }
+      // 往下找
+      const medias = el.querySelectorAll('img, video');
+      for (const m of medias) {
+        if (mediaTaskMap.has(m)) {
+          foundTaskId = mediaTaskMap.get(m);
+          break;
+        }
+      }
+      if (foundTaskId) break;
+
       el = el.parentElement;
       limit--;
     }
@@ -216,41 +236,52 @@
     // 我们直接遍历页面上所有带烙印的 img 图片，看看当前鼠标点击的屏幕位置 (e.clientX, e.clientY) 是否落在这张图片区域内！
     let hitMethod = foundTaskId ? 'DOM Tree' : 'None';
     if (!foundTaskId) {
-       const imgs = document.querySelectorAll('img');
-       for (const img of imgs) {
-          if (mediaTaskMap.has(img)) {
-             const rect = img.getBoundingClientRect();
-             // 考虑到悬浮工具栏可能稍微超出图片边缘，我们向下和向外扩展 40px 的包围盒容差
-             const expand = 40;
-             if (e.clientX >= rect.left - expand && e.clientX <= rect.right + expand &&
-                 e.clientY >= rect.top - expand && e.clientY <= rect.bottom + expand) {
-                 foundTaskId = mediaTaskMap.get(img);
-                 hitMethod = 'Spatial Collision';
-                 break;
-             }
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (mediaTaskMap.has(img)) {
+          const rect = img.getBoundingClientRect();
+          // 考虑到悬浮工具栏可能稍微超出图片边缘，我们向下和向外扩展 40px 的包围盒容差
+          const expand = 40;
+          if (e.clientX >= rect.left - expand && e.clientX <= rect.right + expand &&
+            e.clientY >= rect.top - expand && e.clientY <= rect.bottom + expand) {
+            foundTaskId = mediaTaskMap.get(img);
+            hitMethod = 'Spatial Collision';
+            break;
           }
-       }
+        }
+      }
     }
 
-    // 【最强兜底策略】：如果在 DOM 树里找不到，空间碰撞也没碰到。通常是因为这是生图结束后的补点动作，
-    // 而生图结束时 currentTaskId 会被清空，导致后续渲染的悬浮栏根本没机会打烙印！
-    // 没关系，只要你在这个单页面应用里跑过最近一次画布任务，点下载就默认是给它的！
-    if (!foundTaskId && lastActiveTaskId) {
-       foundTaskId = lastActiveTaskId;
-       hitMethod = 'Memory Fallback (Last Task)';
-    }
-
+    // 【已移除记忆兜底】：防止点击历史任务时将行为错误归因为最近一次运行的任务。
     let debugMsg = `Click: <b>&lt;${e.target.tagName.toLowerCase()}&gt;</b> class='${e.target.className || ''}'<br>`;
     debugMsg += `TaskId Mapped: <span style="color:${foundTaskId ? '#0f0' : 'red'}">${foundTaskId || 'None'}</span> <span style="color:#888">(${hitMethod})</span><br>`;
 
     if (foundTaskId) {
-      // 确认点击的是否是操作按钮（允许 button, svg 以及豆包特殊的 hover-show-tag 悬浮工具栏按钮，排除 a 标签防止误触）
-      // 【新增】对视频的 hover 按钮增加 class 拦截 video-hover-button-group
-      const isDownloadAction = e.target.closest('button, svg, [role="button"], [class*="download"], [class*="save"], [aria-label*="下载"], [aria-label*="保存"], [title*="下载"], [title*="保存"], [class*="hover-show-tag"] div, [class*="hover-DQYL"], [class*="video-hover-button-group"]');
+      // 确认点击的是否是操作按钮（分级判定，防止底栏的其他通用 button 误触发）
+      const highlyTrustedAction = e.target.closest(
+        '[class*="download"], [class*="save"], ' +
+        '[aria-label*="下载"], [aria-label*="保存"], [title*="下载"], [title*="保存"], ' +
+        '[class*="hover-show-tag"] div, [class*="hover-DQYL"], [class*="video-hover-button-group"]'
+      );
+      const genericAction = e.target.closest('button, svg, [role="button"]');
+
+      let isDownloadAction = false;
+      if (highlyTrustedAction) {
+        isDownloadAction = true;
+      } else if (genericAction && hitMethod !== 'Memory Fallback (Last Task)') {
+        // 对于没有任何下载语义的普通 button/svg，只有在它真实物理重叠/包含在带有任务烙印的图片内时，才算作有效操作
+        isDownloadAction = true;
+      }
 
       debugMsg += `isDownloadAction: <span style="color:${isDownloadAction ? '#0f0' : 'orange'}">${!!isDownloadAction}</span>`;
 
       if (isDownloadAction) {
+        // 【核心变更】：拦截浏览器的原生下载或前端框架的下载事件，防止保存到 D:\zhenzhen 等本地下载目录
+        // 这样只需依赖前端自动推送到后端 output 目录即可，保证只存一份！
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
         log(`[Agent] Detected manual download trigger. Emitting alert for task: ${foundTaskId}`);
         try {
           GM_xmlhttpRequest({
@@ -259,8 +290,8 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ taskId: foundTaskId })
           });
-          debugMsg += ` => <b>Alert Emitted!</b>`;
-        } catch (err) {}
+          debugMsg += ` => <b>Alert Emitted! (Native Download Blocked)</b>`;
+        } catch (err) { }
       }
     }
     debugLog(debugMsg);
@@ -546,6 +577,21 @@
   // --- 极速引擎（保留 5.3.0 原版逻辑但去除所有降速模拟） ---
   async function simulateHumanTyping(element, text) {
     element.focus();
+
+    // 【新增兼容】针对独立的生图富文本页面 (contenteditable)，必须显式设置真实光标，否则 execCommand 会因丢失选区而失效
+    if (element.isContentEditable) {
+      try {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(false); // 强制光标到最后
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } catch (e) {
+        log('Failed to set selection range for contenteditable:', e.message);
+      }
+    }
+
     await randomDelay(50, 100);
 
     let i = 0;
@@ -556,6 +602,7 @@
 
       const success = document.execCommand('insertText', false, chunk);
       if (!success) {
+        log('execCommand insertText failed, falling back to manual injection');
         const pasteEvent = new ClipboardEvent('paste', {
           bubbles: true, cancelable: true, clipboardData: new DataTransfer()
         });
@@ -564,11 +611,12 @@
 
         const tracker = element._valueTracker;
         if (tracker) tracker.setValue('');
-        
+
         // 【保险兜底】防患于未然：兼容未来的 contenteditable 富文本结构
         if ('value' in element) {
           element.value = (element.value || '') + chunk;
         } else {
+          // 如果是富文本，最好只修改它的直接文本节点，不过粗暴覆写也可作为终极兜底
           element.textContent = (element.textContent || '') + chunk;
         }
         element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -579,17 +627,34 @@
     }
   }
 
-  // --- 发送（纯净防风控：仅模拟回车键发送，永不点击按钮） ---
+  // --- 发送（综合防风控与鲁棒性：回车键 + 焦点唤醒 + 按钮兜底） ---
   async function simulateSend(inputBox) {
-    log('Sending message via simulated Enter key...');
+    log('Sending message... ensuring focus on inputBox');
+    inputBox.focus();
+    inputBox.dispatchEvent(new Event('focus', { bubbles: true }));
+    inputBox.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+
+    await sleep(100);
+
+    log('Dispatching Enter key events...');
     const keyProps = {
       key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-      bubbles: true, cancelable: true
+      bubbles: true, cancelable: true, composed: true
     };
     inputBox.dispatchEvent(new KeyboardEvent('keydown', keyProps));
+    inputBox.dispatchEvent(new KeyboardEvent('keypress', keyProps));
     await sleep(40 + Math.random() * 60);
     inputBox.dispatchEvent(new KeyboardEvent('keyup', keyProps));
-    log('Sent via Enter key.');
+
+    // 增加按钮点击兜底，因为豆包前端框架可能会拦截虚拟键盘事件
+    await sleep(300);
+    const sendBtn = findSendButton(inputBox);
+    if (sendBtn && !sendBtn.disabled) {
+      log('Fallback: found active send button, clicking it just in case...');
+      sendBtn.click();
+    }
+
+    log('Send sequence completed.');
   }
 
   function findSendButton(inputBox) {
@@ -621,26 +686,46 @@
   // 豆包页面适配器
   // ============================================================
 
-  function findElementBySelectors(selectors) {
+  function isElementTrulyVisible(el) {
+    const rect = el.getBoundingClientRect();
+    // 尺寸必须大于0
+    if (rect.width === 0 || rect.height === 0) return false;
+    // 必须在屏幕视窗内（防止被 transform: translateX(-100%) 等方式移出屏幕）
+    if (rect.right < 0 || rect.bottom < 0 || rect.left > window.innerWidth || rect.top > window.innerHeight) {
+      return false;
+    }
+    // 样式不能是隐藏
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+      return false;
+    }
+    return true;
+  }
+
+  function findVisibleElementBySelectors(selectors) {
     for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
+      const elements = document.querySelectorAll(sel);
+      for (const el of elements) {
+        if (isElementTrulyVisible(el)) {
+          return el;
+        }
+      }
     }
     return null;
   }
 
   function getDoubaoInputBox() {
-    return findElementBySelectors(DOM_SELECTORS.inputBox);
+    return findVisibleElementBySelectors(DOM_SELECTORS.inputBox);
   }
 
   function getDoubaoUploadArea() {
-    const el = findElementBySelectors(DOM_SELECTORS.inputBox);
+    const el = findVisibleElementBySelectors(DOM_SELECTORS.inputBox);
     if (el && el.tagName === 'TEXTAREA') return el.parentElement;
     return el;
   }
 
   function getDoubaoChatContainer() {
-    return findElementBySelectors(DOM_SELECTORS.chatContainer);
+    return findVisibleElementBySelectors(DOM_SELECTORS.chatContainer);
   }
 
   // 判断一个图片元素是否处于 AI 回复气泡中（核心：隔离原图误抓）
@@ -675,12 +760,43 @@
   // 任务处理主流程
   // ============================================================
 
+  async function switchGenerationTab(model) {
+    let targetText = '';
+    if (model === 'video') targetText = '视频生成';
+    else if (model === 'web-agent-doubao') targetText = '图像生成';
+
+    if (!targetText) return;
+
+    log(`Checking if we need to switch to tab: ${targetText}`);
+
+    // 加入重试机制，防止 React 渲染延迟导致瞬间找不到
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // 扩大搜索范围，涵盖可能脱离 button 标签的定制 div/span
+      const elements = document.querySelectorAll('button, div, span, [class*="skill"]');
+      for (const el of elements) {
+        if ((el.textContent || '').trim() === targetText) {
+          // 排除掉正好完全等于这四个字的聊天记录气泡
+          if (el.closest('[data-testid="chat-message-list"], .chat-message-container')) continue;
+
+          // 优先寻找合法的可点击父容器
+          const clickable = el.closest('button, [role="button"], [class*="skill-item"]') || el;
+          clickable.click();
+          log(`Switched to tab: ${targetText} (Attempt ${attempt + 1})`);
+          await sleep(600); // 留出 React 路由/组件挂载时间
+          return;
+        }
+      }
+      await sleep(300); // 短暂休眠后重试
+    }
+    log(`Warning: Tab "${targetText}" not found after retries. Proceeding with default view.`);
+  }
+
   async function handleTask(task) {
     currentTaskId = task.id;
     lastActiveTaskId = task.id;
     localStorage.setItem('doubao_currentTaskId', currentTaskId);
     localStorage.setItem('doubao_lastActiveTaskId', lastActiveTaskId);
-    interactionInProgress = true; 
+    interactionInProgress = true;
     const { prompt, images, model } = task.payload;
     currentTaskModel = model; // 保存模型身份（生图 vs 生视频）
     localStorage.setItem('doubao_currentTaskModel', currentTaskModel);
@@ -688,14 +804,18 @@
     // 快照当前页面所有图片
     snapshotAllImages();
 
-    // 超时保护
+    // 动态超时保护：生图任务 2 分钟 (120000ms)，生视频保留 10 分钟 (CONFIG.taskTimeoutMs)
+    const timeoutMs = currentTaskModel === 'web-agent-doubao' ? 120000 : CONFIG.taskTimeoutMs;
     taskTimeoutTimer = setTimeout(() => {
       if (currentTaskId === task.id) {
-        reportError(`Task Timeout: Exceeded ${CONFIG.taskTimeoutMs / 1000}s`);
+        reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`);
       }
-    }, CONFIG.taskTimeoutMs);
+    }, timeoutMs);
 
     try {
+      // --- 步骤 1：智能切换独立生图/生视频频道 ---
+      await switchGenerationTab(currentTaskModel);
+
       const inputBox = getDoubaoInputBox();
       if (!inputBox) {
         throw new Error(`Selector outdated (v${DOM_SELECTORS.version}): input not found.`);
@@ -709,7 +829,7 @@
         await simulateMouseApproach(inputBox);
 
         const fileInput = document.querySelector('input[type="file"][accept*="image"]')
-                       || document.querySelector('input[type="file"]');
+          || document.querySelector('input[type="file"]');
 
         if (fileInput) {
           log('Uploading via file input with focus lifecycle...');
@@ -739,7 +859,7 @@
       // --- 步骤2.5：视觉层嗅探，死磕上传指示器 ---
       if (hasImages) {
         log('Awaiting DOM visual layer confirmation for upload completion...');
-        await waitForUploadComplete();
+        await waitForUploadComplete(images.length);
         log('DOM indicates upload is clear. Waiting randomly for UI finalize...');
         await randomDelay(1000, 2000);
       }
@@ -775,43 +895,135 @@
   // ============================================================
   // 视觉底板嗅探器 (精准等待图片上传完成)
   // ============================================================
-  async function waitForUploadComplete() {
-    const MAX_WAIT_MS = 30000;
+  async function waitForUploadComplete(expectedCount = 0) {
     const intervalMs = 1000;
     let elapsed = 0;
 
+    log(`[Upload Sniffer] Target count: ${expectedCount} images. Waiting for upload...`);
     // 核心缺陷修复：给前端 React 框架留出渲染进度圆圈的喘息时间
     // 否则刚注入图片，DOM 还没来得及长出圆圈，就会被错误地秒判通过！
-    log('Waiting 1000ms for Doubao UI to mount upload progress circles...');
     await sleep(1000);
 
-    while (elapsed < MAX_WAIT_MS) {
-      // 根据用户提供的真实 DOM 结构精准狙击：
-      const loadingIndicators = document.querySelectorAll(
-        '.semi-progress-circle-text, .semi-progress-circle-ring-inner, [class*="progress-circle"]'
-      );
-      
+    while (true) {
       let isLoading = false;
-      for (const el of loadingIndicators) {
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.opacity !== '0' && style.visibility !== 'hidden') {
-          isLoading = true;
-          break;
+      let activeIndicatorClass = '';
+      let uploadedReadyCount = 0;
+      let hasError = false;
+      let activeErrorClass = '';
+      let composer = null;
+
+      // 1. 物理定位与计数，并对每个有效图片子卡片区域做局部的上传报错感叹号嗅探
+      const inputBox = getDoubaoInputBox();
+      if (inputBox) {
+        let p = inputBox.parentElement;
+        let depth = 0;
+        let bestComposer = null;
+        let maxCount = 0;
+        let finalError = false;
+
+        while (p && p !== document.body && depth < 12) {
+          // 【核心防御】绝不进行全屏扫描！
+          // 防御1：不要扩散到包含历史聊天记录的容器
+          if (p.querySelector('[data-testid="chat-message-list"], .chat-message-container')) break;
+          // 防御2：容器高度如果超过了视窗的 75%，说明已经扩大到了主页面级别，立刻停止
+          if (p.clientHeight > window.innerHeight * 0.75) break;
+
+          const imgs = p.querySelectorAll('img');
+          let count = 0;
+          let foundError = false;
+          for (const img of imgs) {
+            // 排除用户头像和极小的图标
+            const isAvatar = img.closest('[class*="avatar"], [class*="Avatar"], [class*="user-info"]');
+            if (!isAvatar) {
+              const isLoaded = img.clientWidth > 15 || img.naturalWidth > 15;
+              const isLocalOrBlob = img.src && (img.src.startsWith('blob:') || img.src.startsWith('data:'));
+              if (isLoaded || isLocalOrBlob) {
+                count++;
+
+                // 对此张图片所在的局部预览卡片区域进行报错探测（向上遍历最多 4 层父级）
+                let card = img.parentElement;
+                let cardDepth = 0;
+                while (card && card !== p && cardDepth < 4) {
+                  const errorIndicators = card.querySelectorAll(
+                    '[class*="error"], [class*="fail"], [class*="warning"], [class*="alert"], .semi-icon-alert-circle, [data-icon*="alert"], [data-icon*="error"], [aria-label*="失败"], [aria-label*="错误"]'
+                  );
+                  for (const el of errorIndicators) {
+                    const style = window.getComputedStyle(el);
+                    // 必须加上物理尺寸判断，防止父元素 display:none 但子元素属性依旧的问题
+                    // 使用 getBoundingClientRect() 兼容 SVG 元素的尺寸获取
+                    const rect = el.getBoundingClientRect();
+                    if (style.display !== 'none' && style.opacity !== '0' && style.visibility !== 'hidden' && (rect.width > 0 || rect.height > 0)) {
+                      foundError = true;
+                      activeErrorClass = `${img.src.slice(0, 30)}... -> ${el.className || el.tagName}`;
+                      break;
+                    }
+                  }
+                  if (foundError) break;
+                  card = card.parentElement;
+                  cardDepth++;
+                }
+              }
+            }
+          }
+
+          if (count > maxCount) {
+            maxCount = count;
+            bestComposer = p;
+            finalError = foundError;
+          }
+
+          // 如果已经达到了预期图片数量，说明当前容器完美包裹了所有上传预览图，立刻停止扩散
+          if (expectedCount > 0 && count >= expectedCount) {
+            break;
+          }
+
+          p = p.parentElement;
+          depth++;
+        }
+
+        if (bestComposer) {
+          composer = bestComposer;
+          uploadedReadyCount = maxCount;
+          hasError = finalError;
         }
       }
 
-      if (!isLoading) {
-        log(`No visible progress elements found. Wait considered complete after ${elapsed}ms.`);
+      // 2. 局部精确检测：如果找到了局部容器，只检测其内部的进度圈，防止被聊天历史干扰
+      if (composer) {
+        // 精准检测局部进度指示器：
+        const loadingIndicators = composer.querySelectorAll(
+          '.semi-progress-circle-text, .semi-progress-circle-ring-inner, [class*="progress-circle"]'
+        );
+        for (const el of loadingIndicators) {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          if (style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) > 0.05 && (rect.width > 0 || rect.height > 0)) {
+            // 核心修复：如果进度圈上的数字已经跑到 100%，说明其实已经传完了，只是前端的消失动画卡住了或延迟了
+            if (el.textContent && el.textContent.includes('100%')) {
+              continue;
+            }
+            isLoading = true;
+            activeIndicatorClass = el.className || el.tagName;
+            break;
+          }
+        }
+      }
+
+      // 只有在没有进度圈在转，且已就绪的图片数量满足期望值，且没有上传失败指示时才放行
+      if (isLoading || hasError || (expectedCount > 0 && uploadedReadyCount < expectedCount)) {
+        let logMsg = `Still uploading...`;
+        if (isLoading) logMsg += ` [Progress circle active: ${activeIndicatorClass}]`;
+        if (hasError) logMsg += ` [Exclamation mark/Error detected: ${activeErrorClass}]`;
+        if (expectedCount > 0 && uploadedReadyCount < expectedCount) logMsg += ` [Images ready: ${uploadedReadyCount}/${expectedCount}]`;
+        log(`${logMsg} (${Math.round(elapsed / 1000)}s elapsed)`);
+      } else {
+        log(`All uploads clear. Progress ring: inactive, Ready images: ${uploadedReadyCount}/${expectedCount}. Wait considered complete after ${Math.round(elapsed / 1000)}s.`);
         return true;
       }
-      
-      log(`Still uploading... DOM semi-progress-circle detected. (${elapsed}ms elapsed)`);
+
       await sleep(intervalMs);
       elapsed += intervalMs;
     }
-    
-    log(`Warning: Wait for upload timed out after ${MAX_WAIT_MS}ms. Forcing proceed.`);
-    return false;
   }
 
   // ============================================================
@@ -822,7 +1034,7 @@
     let isFinished = false;
     let silenceTimer = null;
     let finishResolver = null;
-    const SILENCE_THRESHOLD = 2500; 
+    const SILENCE_THRESHOLD = 2500;
 
     const finish = () => {
       if (isFinished) return;
@@ -968,27 +1180,27 @@
 
         // 【大一统优先通道】如果没找到下载按钮，或者是视频，全部直接尝试 URL 推送！
         if (isAutoSyncEnabled) {
-            const urlSuccess = await pushUrlToBackend(url, currentTaskId);
-            if (urlSuccess) {
-              clearTaskState();
-              return true;
-            }
-            
-            log(`[URL Push] 降级：用二进制流备用...`);
+          const urlSuccess = await pushUrlToBackend(url, currentTaskId);
+          if (urlSuccess) {
+            clearTaskState();
+            return true;
+          }
 
-            // URL 推送失败时才用二进制流
-            const success = await downloadAndPushBinaryMedia(url, currentTaskId);
-            if (success) {
-              clearTaskState();
-              return true;
-            }
+          log(`[URL Push] 降级：用二进制流备用...`);
+
+          // URL 推送失败时才用二进制流
+          const success = await downloadAndPushBinaryMedia(url, currentTaskId);
+          if (success) {
+            clearTaskState();
+            return true;
+          }
         } else {
-            // 在手动模式下，视频或其他媒体也被标记挂起，等待用户自行决定。
-            processedImages.add(url);
+          // 在手动模式下，视频或其他媒体也被标记挂起，等待用户自行决定。
+          processedImages.add(url);
         }
       }
     } catch (e) { /* 静默 */ }
-    return false; 
+    return false;
   }
 
   function pushUrlToBackend(url, taskId) {
@@ -1095,12 +1307,12 @@
         resultDebounceTimer = setTimeout(async () => {
           log(`[Event Driven] Downlink media detected. Waking up after ${randomDebounce}ms to harvest...`);
           for (let i = 0; i < 2; i++) {
-             const success = await checkPageForMedia();
-             if (success || !currentTaskId) {
-                 log('[Event Driven] Harvest success and target secured.');
-                 break;
-             }
-             if (i < 1) await sleep(500); 
+            const success = await checkPageForMedia();
+            if (success || !currentTaskId) {
+              log('[Event Driven] Harvest success and target secured.');
+              break;
+            }
+            if (i < 1) await sleep(500);
           }
         }, randomDebounce);
       }
@@ -1115,7 +1327,7 @@
 
   function bootstrap() {
     log('Event-Driven Stealth Bridge V5 initialized.');
-    initResultMediaSniffer(); 
+    initResultMediaSniffer();
     pollTasks();
     idleActivitySimulator();
   }

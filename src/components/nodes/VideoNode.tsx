@@ -505,8 +505,9 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
       if (apiModel === 'web-agent-doubao') {
         const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
+        const promptWithSettings = `${finalPrompt} (视频比例: ${ratio}, 时长: ${duration}秒)`;
         return await executeDoubaoBridgeGeneration({
-          prompt: finalPrompt,
+          prompt: promptWithSettings,
           images: imageUrls.slice(0, Math.max(1, maxMentionRefs || modelDef.maxRefImages || 8)),
           model: apiModel,
           onUpdate: update,

@@ -12,13 +12,13 @@ const child_process = require('child_process');
 
 const router = express.Router();
 
-const upload = multer({ 
+const upload = multer({
   dest: config.OUTPUT_DIR,
   limits: { fileSize: 200 * 1024 * 1024 }
 });
 
-const tasks = []; 
-const results = new Map(); 
+const tasks = [];
+const results = new Map();
 const waitingClients = [];
 
 // ============================================================
@@ -97,7 +97,7 @@ router.post('/push-url', (req, res) => {
   try {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === 'https:' ? https : http;
-    
+
     // 智能解析扩展名：防止视频被错误标记为 .png
     let ext = path.extname(parsedUrl.pathname);
     const taskRecord = results.get(taskId);
@@ -108,7 +108,7 @@ router.post('/push-url', (req, res) => {
         ext = '.png';
       }
     }
-    
+
     const filename = `bridge_media_${taskId}_${Date.now()}${ext}`;
     const filepath = path.join(config.OUTPUT_DIR, filename);
 
@@ -128,7 +128,7 @@ router.post('/push-url', (req, res) => {
           fileStream.close();
           const localUrl = `http://127.0.0.1:18766/output/${filename}`;
           const currentRecord = results.get(taskId) || { urls: [] };
-          
+
           results.set(taskId, {
             ...currentRecord,
             status: status || 'completed',
@@ -160,10 +160,10 @@ router.post('/push', (req, res) => {
       if (matches && matches.length === 3) {
         const ext = matches[1].split('/')[1] === 'jpeg' ? 'jpg' : 'png';
         const buffer = Buffer.from(matches[2], 'base64');
-        const filename = `bridge_thumb_${taskId}_${Date.now()}.${ext}`;
+        const filename = `bridge_thumb_${taskId}.${ext}`;
         const filepath = path.join(config.OUTPUT_DIR, filename);
         fs.writeFileSync(filepath, buffer);
-        update.urls = [`http://127.0.0.1:18766/output/${filename}`];
+        update.urls = [`http://127.0.0.1:18766/output/${filename}?t=${Date.now()}`];
       }
     } else if (base64Data && typeof base64Data === 'string') {
       update.urls = [base64Data];
@@ -180,17 +180,17 @@ router.post('/push-media', upload.single('media'), (req, res) => {
     if (!taskId || !file) return res.status(400).json({ error: 'Missing' });
 
     const ext = file.originalname ? path.extname(file.originalname) : '.mp4';
-    const filename = `bridge_media_${taskId}_${Date.now()}${ext}`;
+    const filename = `bridge_media_${taskId}${ext}`;
     const filepath = path.join(config.OUTPUT_DIR, filename);
     fs.copyFileSync(file.path, filepath);
     fs.unlinkSync(file.path);
 
     const currentRecord = results.get(taskId) || { urls: [] };
-    const localUrl = `http://127.0.0.1:18766/output/${filename}`;
-    
+    const localUrl = `http://127.0.0.1:18766/output/${filename}?t=${Date.now()}`;
+
     results.set(taskId, { ...currentRecord, status: status || 'completed', progress: '100%', urls: [localUrl] });
-      broadcastSSE('rawUrls', { taskId, rawUrls: [localUrl] });
-      res.json({ success: true, url: localUrl });
+    broadcastSSE('rawUrls', { taskId, rawUrls: [localUrl] });
+    res.json({ success: true, url: localUrl });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -220,9 +220,9 @@ router.post('/download-alert', (req, res) => {
   try {
     const { taskId } = req.body;
     if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
-    
+
     console.log(`[Tampermonkey] 收到大图下载预警，启动看门狗锁定 taskId: ${taskId}`);
-    
+
     const now = Date.now();
     let matchedFile = null;
     const taskRecord = results.get(taskId);
@@ -255,7 +255,7 @@ router.post('/download-alert', (req, res) => {
         console.log(`[Watchdog] 暂未发现匹配文件，taskId ${taskId} 已进入待认领�?`);
       }
     }
-    
+
     for (const [key, timestamp] of claimPool.entries()) {
       if (now - timestamp > 10 * 60 * 1000) claimPool.delete(key);
     }
@@ -273,7 +273,7 @@ function getRealDownloadsPath() {
         let regPath = match[1].trim().replace(/%([^%]+)%/g, (_, n) => process.env[n] || '');
         if (fs.existsSync(regPath)) return regPath;
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   return defaultPath;
 }
@@ -299,7 +299,7 @@ function scanDownloadsForRecentMedia(dirPath, exts, withinMs) {
           bestMatch = fullPath;
           bestTime = mtime;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     if (bestMatch) {
       processedScanFiles.add(bestMatch);
@@ -344,8 +344,8 @@ function processDownloadedFile(filePath, taskId) {
     const rawUrls = [finalUrl];
 
     if (currentRecord) {
-      results.set(taskId, { 
-        ...currentRecord, 
+      results.set(taskId, {
+        ...currentRecord,
         rawUrls: rawUrls,
         urls: rawUrls,
         status: 'completed',
