@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.19
+// @version      5.4.22
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -29,7 +29,7 @@
   // ============================================================
   const DEBUG = true;
   const CONFIG = {
-    pollUrl: 'http://127.0.0.1:18766/api/bridge/pull',
+    pollUrl: 'http://127.0.0.1:18766/api/bridge/pull?target=web-agent-doubao',
     pushUrl: 'http://127.0.0.1:18766/api/bridge/push',
     pushMediaUrl: 'http://127.0.0.1:18766/api/bridge/push-media',
     pushUrlUrl: 'http://127.0.0.1:18766/api/bridge/push-url',  // 【新增】高速 URL 推送通道
@@ -268,7 +268,7 @@
       let isDownloadAction = false;
       if (highlyTrustedAction) {
         isDownloadAction = true;
-      } else if (genericAction && hitMethod !== 'Memory Fallback (Last Task)') {
+      } else if (genericAction) {
         // 对于没有任何下载语义的普通 button/svg，只有在它真实物理重叠/包含在带有任务烙印的图片内时，才算作有效操作
         isDownloadAction = true;
       }
@@ -276,11 +276,10 @@
       debugMsg += `isDownloadAction: <span style="color:${isDownloadAction ? '#0f0' : 'orange'}">${!!isDownloadAction}</span>`;
 
       if (isDownloadAction) {
-        // 【核心变更】：拦截浏览器的原生下载或前端框架的下载事件，防止保存到 D:\zhenzhen 等本地下载目录
-        // 这样只需依赖前端自动推送到后端 output 目录即可，保证只存一份！
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
+        // 【核心变更与修复】：绝对放行原生下载！ Watchdog 会自动清理默认下载目录的文件。
+        // e.preventDefault();
+        // e.stopPropagation();
+        // e.stopImmediatePropagation();
 
         log(`[Agent] Detected manual download trigger. Emitting alert for task: ${foundTaskId}`);
         try {
@@ -290,7 +289,7 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ taskId: foundTaskId })
           });
-          debugMsg += ` => <b>Alert Emitted! (Native Download Blocked)</b>`;
+          debugMsg += ` => <b>Alert Emitted! (Native Download Allowed)</b>`;
         } catch (err) { }
       }
     }

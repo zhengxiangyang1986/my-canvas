@@ -309,36 +309,26 @@ function scanDownloadsForRecentMedia(dirPath, exts, withinMs) {
   } catch (e) { return null; }
 }
 
-function processDownloadedFile(filePath, taskId) {
+async function processDownloadedFile(filePath, taskId) {
   const ext = path.extname(filePath).toLowerCase();
   try {
     const currentRecord = results.get(taskId);
     let finalUrl = "";
     const ts = Date.now();
 
-    // 不再依赖脆弱的内存 urls 记录，直接暴力扫描物理磁盘寻找相同 taskId 的老图
-    let oldFilename = null;
-    try {
-      const filesInOutput = fs.readdirSync(config.OUTPUT_DIR);
-      oldFilename = filesInOutput.find(f => f.startsWith(`bridge_raw_${taskId}_`));
-    } catch (e) {
-      console.warn(`[Watchdog] 扫描输出目录失败:`, e.message);
-    }
+    // 满足用户意愿：同一个任务的id永远只有一张图，直接硬覆写同一个物理文件！
+    const filename = `bridge_media_${taskId}${ext}`;
+    const targetPath = path.join(config.OUTPUT_DIR, filename);
+    
+    // 使用带重试的拷贝，防止文件被浏览器锁定导致复制失败从而无法同步前端
+    await copyFileWithRetry(filePath, targetPath);
+    console.log(`[Watchdog] 遵循指令：强制物理覆盖生成最终高清大图 ${filename}`);
 
-    if (oldFilename) {
-      // 找到了这个任务之前的图，直接物理覆盖
-      const mediaFilePath = path.join(config.OUTPUT_DIR, oldFilename);
-      fs.copyFileSync(filePath, mediaFilePath);
-      console.log(`[Watchdog] 遵循指令：通过磁盘扫描强制物理覆盖老图 ${oldFilename}`);
-      // 核心：加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
-      finalUrl = `http://127.0.0.1:18766/output/${oldFilename}?t=${ts}`;
-    } else {
-      // 没找到任何相关图，这是该任务的第一张新图
-      const filename = `bridge_raw_${taskId}_${ts}${ext}`;
-      const targetPath = path.join(config.OUTPUT_DIR, filename);
-      fs.copyFileSync(filePath, targetPath);
-      finalUrl = `http://127.0.0.1:18766/output/${filename}`;
-    }
+    // 加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
+    finalUrl = `http://127.0.0.1:18766/output/${filename}?t=${ts}`;
+
+    // 满足用户“现在浏览器不需要删除”的需求，保留浏览器原生下载的原文件，不再调用 fs.unlinkSync
+    console.log(`[Watchdog] 遵循指令：保留浏览器原生下载的原文件: ${filePath}`);
 
     // 满足用户意愿：同一个任务的id永远只有一张图
     const rawUrls = [finalUrl];
@@ -397,5 +387,27 @@ watcher.on('add', (filePath) => {
     }
   }
 });
+
+async function copyFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      if (!fs.existsSync(src)) {
+        throw new Error("源文件尚未创建完成");
+      }
+      const stats = fs.statSync(src);
+      if (stats.size === 0) {
+        throw new Error("文件大小为 0，可能尚未完成下载");
+      }
+      fs.copyFileSync(src, dest);
+      return true;
+    } catch (err) {
+      if (i === maxRetries - 1) {
+        throw err;
+      }
+      console.log(`[Watchdog] 文件被占用或未写完，等待 ${delayMs}ms 重试 (${i + 1}/${maxRetries}): ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
 
 module.exports = router;
