@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.22
+// @version      5.4.32
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -29,12 +29,15 @@
   // ============================================================
   const DEBUG = true;
   const CONFIG = {
+    // 轮询池：保持在 127.0.0.1（与画板 UI 共享连接池，因为它的生命周期长，属于后台维持）
     pollUrl: 'http://127.0.0.1:18766/api/bridge/pull?target=web-agent-doubao',
-    pushUrl: 'http://127.0.0.1:18766/api/bridge/push',
-    pushMediaUrl: 'http://127.0.0.1:18766/api/bridge/push-media',
-    pushUrlUrl: 'http://127.0.0.1:18766/api/bridge/push-url',  // 【新增】高速 URL 推送通道
-    downloadAlertUrl: 'http://127.0.0.1:18766/api/bridge/download-alert',
-    logUrl: 'http://127.0.0.1:18766/api/bridge/log',
+    // 推送池：全部改为 localhost！这会在浏览器底层强制开辟第二条完全独立的 6 线程连接池，
+    // 彻底防止大图预警/日志请求被长时间的轮询 (pull) 或画板的 SSE 阻塞队列！
+    pushUrl: 'http://localhost:18766/api/bridge/push',
+    pushMediaUrl: 'http://localhost:18766/api/bridge/push-media',
+    pushUrlUrl: 'http://localhost:18766/api/bridge/push-url',
+    downloadAlertUrl: 'http://localhost:18766/api/bridge/download-alert',
+    logUrl: 'http://localhost:18766/api/bridge/log',
     taskTimeoutMs: 600000,
     debug: false,
     pollIntervalMin: 500,
@@ -46,18 +49,21 @@
   function log(...args) {
     const msg = args.join(' ');
 
-    // 【物理静音】无论配置如何，绝不调用原生或任何形式的前端控制台输出，防大厂探针
-    // 只走特权隧道发送到后端的终端
-    try {
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: CONFIG.logUrl,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ level: 'info', message: msg })
-      });
-    } catch (e) { }
+    // 禁用高频的网络日志推送，防止把油猴内部的 GM_xmlhttpRequest 队列塞满！
+    // 之前高达十几秒的延迟，就是因为日志把队列堵死了，导致真正的警报发不出去！
+    if (CONFIG.debug) {
+      try {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: CONFIG.logUrl,
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify({ level: 'info', message: msg })
+        });
+      } catch (e) { }
+    }
 
-    // 如果网页调试端开启了，也向网页输出
+    // 直接输出到网页控制台，不走网络！
+    console.log(`[T8 Doubao Sync]`, msg);
     if (typeof debugLog === 'function') debugLog(`<span style="color:#aaa;">${msg}</span>`);
   }
 
@@ -107,12 +113,23 @@
   // ============================================================
   let isAutoSyncEnabled = GM_getValue('autoSync', true);
   let isPolling = false;
-  let currentTaskId = localStorage.getItem('doubao_currentTaskId') || null;
-  let currentTaskModel = localStorage.getItem('doubao_currentTaskModel') || null;
-  let lastActiveTaskId = localStorage.getItem('doubao_lastActiveTaskId') || null;
-  let taskTimeoutTimer = null;
   let interactionInProgress = false; // 互斥锁：主流程执行中禁止抓图
   const processedImages = new Set();
+  let taskTimeoutTimer = null;
+  let lastDispatchedTaskId = localStorage.getItem('doubao_lastDispatchedTaskId') || null;
+
+  // 终极防错：基于豆包 data-message-id 的 DOM 实体强绑定字典
+  let messageTaskMap = {};
+  try {
+    messageTaskMap = JSON.parse(localStorage.getItem('doubao_messageTaskMap')) || {};
+  } catch(e) {}
+  function saveMessageTask(messageId, taskId) {
+    if (!messageId || !taskId) return;
+    messageTaskMap[messageId] = taskId;
+    const keys = Object.keys(messageTaskMap);
+    if (keys.length > 200) delete messageTaskMap[keys[0]]; // 限制大小，防止挤爆 localStorage
+    localStorage.setItem('doubao_messageTaskMap', JSON.stringify(messageTaskMap));
+  }
 
   // 弱引用缓存：绑定 DOM元素 -> taskId，绝对隐身不改 HTML
   const mediaTaskMap = new WeakMap();
@@ -207,45 +224,67 @@
     // 【移除拦截】无论是全自动还是手动模式，雷达必须永久在线，用于捕获用户的物理点击！
 
     // 逆向遍历寻找带有 taskId 烙印的祖先元素
-    let el = e.target;
     let foundTaskId = null;
-    let limit = 8; // 搜索深度
-
-    // 【冒泡+向下探测法】：因为下载按钮通常和图片是同级兄弟节点的后代，单独向上找是找不到 <img> 的。
-    // 我们一层层往上冒泡，在每一层的容器里寻找有没有带烙印的图片。由于是由内向外找，保证能找到最近的那张图！
-    while (el && el !== document.body && limit > 0) {
-      if (mediaTaskMap.has(el)) {
-        foundTaskId = mediaTaskMap.get(el);
-        break;
+    let hitMethod = 'None';
+    
+    // 1. 最高效：直接向上寻找 data-message-id 祖先
+    const bubble = e.target.closest('[data-message-id]');
+    if (bubble) {
+      const msgId = bubble.getAttribute('data-message-id');
+      if (msgId && messageTaskMap[msgId]) {
+        foundTaskId = messageTaskMap[msgId];
+        hitMethod = 'DOM Box (closest Message-ID)';
       }
-      // 往下找
-      const medias = el.querySelectorAll('img, video');
-      for (const m of medias) {
-        if (mediaTaskMap.has(m)) {
-          foundTaskId = mediaTaskMap.get(m);
+    }
+
+    // 2. 备用缓存：沿着 DOM 树检查 mediaTaskMap 烙印
+    if (!foundTaskId) {
+      let el = e.target;
+      let limit = 8;
+      while (el && el !== document.body && limit > 0) {
+        if (mediaTaskMap.has(el)) {
+          foundTaskId = mediaTaskMap.get(el);
+          hitMethod = 'DOM Tree';
           break;
         }
+        const medias = el.querySelectorAll ? el.querySelectorAll('img, video') : [];
+        for (const m of medias) {
+          if (mediaTaskMap.has(m)) {
+            foundTaskId = mediaTaskMap.get(m);
+            hitMethod = 'DOM Tree (Child)';
+            break;
+          }
+        }
+        if (foundTaskId) break;
+        el = el.parentElement;
+        limit--;
       }
-      if (foundTaskId) break;
-
-      el = el.parentElement;
-      limit--;
     }
 
     // 【终极降维打击】：空间坐标碰撞法！如果根据DOM树找不到烙印（因为悬浮栏可能被渲染为同级兄弟节点）
     // 我们直接遍历页面上所有带烙印的 img 图片，看看当前鼠标点击的屏幕位置 (e.clientX, e.clientY) 是否落在这张图片区域内！
-    let hitMethod = foundTaskId ? 'DOM Tree' : 'None';
     if (!foundTaskId) {
-      const imgs = document.querySelectorAll('img');
+      const imgs = document.querySelectorAll('img, video');
       for (const img of imgs) {
-        if (mediaTaskMap.has(img)) {
+        let imgTaskId = mediaTaskMap.get(img);
+        if (!imgTaskId) {
+          const imgBubble = img.closest('[data-message-id]');
+          if (imgBubble) {
+            const mId = imgBubble.getAttribute('data-message-id');
+            if (mId && messageTaskMap[mId]) {
+              imgTaskId = messageTaskMap[mId];
+            }
+          }
+        }
+
+        if (imgTaskId) {
           const rect = img.getBoundingClientRect();
           // 考虑到悬浮工具栏可能稍微超出图片边缘，我们向下和向外扩展 40px 的包围盒容差
           const expand = 40;
           if (e.clientX >= rect.left - expand && e.clientX <= rect.right + expand &&
             e.clientY >= rect.top - expand && e.clientY <= rect.bottom + expand) {
-            foundTaskId = mediaTaskMap.get(img);
-            hitMethod = 'Spatial Collision';
+            foundTaskId = imgTaskId;
+            hitMethod = 'Spatial Collision + DOM Box';
             break;
           }
         }
@@ -257,20 +296,37 @@
     debugMsg += `TaskId Mapped: <span style="color:${foundTaskId ? '#0f0' : 'red'}">${foundTaskId || 'None'}</span> <span style="color:#888">(${hitMethod})</span><br>`;
 
     if (foundTaskId) {
-      // 确认点击的是否是操作按钮（分级判定，防止底栏的其他通用 button 误触发）
-      const highlyTrustedAction = e.target.closest(
+      let isDownloadAction = false;
+      
+      // 1. 显式带有下载/保存语义的元素 (或视频底部的按钮)
+      const explicitDownload = e.target.closest(
         '[class*="download"], [class*="save"], ' +
         '[aria-label*="下载"], [aria-label*="保存"], [title*="下载"], [title*="保存"], ' +
-        '[class*="hover-show-tag"] div, [class*="hover-DQYL"], [class*="video-hover-button-group"]'
+        '[class*="video-hover-button-group"] [class*="action-button"]'
       );
-      const genericAction = e.target.closest('button, svg, [role="button"]');
 
-      let isDownloadAction = false;
-      if (highlyTrustedAction) {
+      if (explicitDownload) {
         isDownloadAction = true;
-      } else if (genericAction) {
-        // 对于没有任何下载语义的普通 button/svg，只有在它真实物理重叠/包含在带有任务烙印的图片内时，才算作有效操作
-        isDownloadAction = true;
+      } else {
+        // 2. 图像悬浮条：必须严格检测是否是“最后一个”按钮，坚决排除“分享/扩图”等误触
+        const hoverContainer = e.target.closest('[class*="hover-show-tag"]');
+        if (hoverContainer) {
+          // 只找直系子级的非分割线 div
+          const btns = Array.from(hoverContainer.querySelectorAll(':scope > div')).filter(el => !el.className.includes('divider'));
+          if (btns.length > 0) {
+            const lastBtn = btns[btns.length - 1];
+            if (lastBtn.contains(e.target)) {
+              isDownloadAction = true;
+            }
+          }
+        } else {
+          // 3. 终极容错：如果既没有显式标识，又不在已知悬浮条内，但点击的是右下角附近的某个孤立的图标？
+          // 为了不误杀（也不乱触发），我们保留一个基础容错：如果它的 class 包含 hover-DQYL 且没有别的明确特征，也算。
+          const fuzzyBtn = e.target.closest('[class*="hover-DQYL"]');
+          if (fuzzyBtn) {
+            // isDownloadAction = true; // 暂不开启模糊匹配，遵循严格最后一个原则
+          }
+        }
       }
 
       debugMsg += `isDownloadAction: <span style="color:${isDownloadAction ? '#0f0' : 'orange'}">${!!isDownloadAction}</span>`;
@@ -383,7 +439,7 @@
   async function idleActivitySimulator() {
     while (true) {
       await sleep(15000 + Math.random() * 30000);
-      if (!currentTaskId) simulateIdleScroll();
+      if (!interactionInProgress) simulateIdleScroll();
     }
   }
 
@@ -407,16 +463,12 @@
 
   async function reportError(errorMsg) {
     log('Error:', errorMsg);
-    if (currentTaskId) {
-      await pushResult(currentTaskId, 'failed', null, errorMsg);
-      clearTaskState();
-    } else {
-      GM_xmlhttpRequest({
-        method: 'POST', url: CONFIG.pushUrl,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ taskId: 'ALERT', status: 'error', error: errorMsg })
-      });
-    }
+    // 这里如果产生超时等错误，我们无所谓是哪个具体的 task，只在必要时通过全局兜底通道汇报
+    GM_xmlhttpRequest({
+      method: 'POST', url: CONFIG.pushUrl,
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ taskId: 'ALERT', status: 'error', error: errorMsg })
+    });
   }
 
   window.addEventListener('error', (event) => {
@@ -477,10 +529,6 @@
   }
 
   function clearTaskState() {
-    currentTaskId = null;
-    currentTaskModel = null;
-    localStorage.removeItem('doubao_currentTaskId');
-    localStorage.removeItem('doubao_currentTaskModel');
     interactionInProgress = false;
     if (taskTimeoutTimer) {
       clearTimeout(taskTimeoutTimer);
@@ -790,30 +838,56 @@
     log(`Warning: Tab "${targetText}" not found after retries. Proceeding with default view.`);
   }
 
+  function captureNextAiBox(taskId) {
+    const chatContainer = getDoubaoChatContainer() || document.body;
+    const existingMsgIds = new Set();
+    const oldBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
+    for (const b of oldBubbles) {
+      const msgId = b.getAttribute('data-message-id');
+      if (msgId) existingMsgIds.add(msgId);
+    }
+
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      if (attempts > 50) {
+        clearInterval(interval);
+        return;
+      }
+      const currentBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
+      for (const b of currentBubbles) {
+        const msgId = b.getAttribute('data-message-id');
+        if (msgId && !existingMsgIds.has(msgId)) {
+          saveMessageTask(msgId, taskId);
+          log(`[DOM Binding] Locked NEW Box ${msgId} to Task ${taskId}`);
+          clearInterval(interval);
+          return;
+        }
+      }
+    }, 200);
+  }
+
   async function handleTask(task) {
-    currentTaskId = task.id;
-    lastActiveTaskId = task.id;
-    localStorage.setItem('doubao_currentTaskId', currentTaskId);
-    localStorage.setItem('doubao_lastActiveTaskId', lastActiveTaskId);
-    interactionInProgress = true;
     const { prompt, images, model } = task.payload;
-    currentTaskModel = model; // 保存模型身份（生图 vs 生视频）
-    localStorage.setItem('doubao_currentTaskModel', currentTaskModel);
+    const taskModel = model === 'video' ? 'video' : 'web-agent-doubao';
+
+    lastDispatchedTaskId = task.id;
+    localStorage.setItem('doubao_lastDispatchedTaskId', task.id);
+
+    interactionInProgress = true;
 
     // 快照当前页面所有图片
     snapshotAllImages();
 
-    // 动态超时保护：生图任务 2 分钟 (120000ms)，生视频保留 10 分钟 (CONFIG.taskTimeoutMs)
-    const timeoutMs = currentTaskModel === 'web-agent-doubao' ? 120000 : CONFIG.taskTimeoutMs;
+    // 动态超时保护
+    const timeoutMs = taskModel === 'web-agent-doubao' ? 120000 : CONFIG.taskTimeoutMs;
     taskTimeoutTimer = setTimeout(() => {
-      if (currentTaskId === task.id) {
-        reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`);
-      }
+      reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`);
     }, timeoutMs);
 
     try {
       // --- 步骤 1：智能切换独立生图/生视频频道 ---
-      await switchGenerationTab(currentTaskModel);
+      await switchGenerationTab(taskModel);
 
       const inputBox = getDoubaoInputBox();
       if (!inputBox) {
@@ -863,6 +937,9 @@
         await randomDelay(1000, 2000);
       }
 
+      // --- 步骤2.8：挂起 DOM 监听器，死磕即将在发送后新生成的对话气泡框 ---
+      captureNextAiBox(task.id);
+
       // --- 步骤3：发送 ---
       await simulateSend(inputBox);
 
@@ -871,7 +948,7 @@
       snapshotAllImages();
 
       interactionInProgress = false;
-      await pushResult(currentTaskId, 'running');
+      await pushResult(task.id, 'running');
 
     } catch (e) {
       interactionInProgress = false;
@@ -1093,7 +1170,6 @@
   }
 
   async function checkPageForMedia() {
-    if (!currentTaskId) return;
     if (interactionInProgress) return;
 
     try {
@@ -1115,10 +1191,6 @@
 
         const isVideo = el.tagName === 'VIDEO';
 
-        // 核心：防异种媒体混淆！严格的类型双向隔离！
-        if (currentTaskModel === 'video' && !isVideo) continue;
-        if (currentTaskModel !== 'video' && isVideo) continue;
-
         if (!isVideo) {
           if (!el.complete) {
             await new Promise(r => { el.onload = r; el.onerror = r; });
@@ -1130,16 +1202,44 @@
         log(`Found AI-generated ${isVideo ? 'video' : 'image'}! Trying URL push first...`);
 
         const container = el.closest('[class*="message"], [class*="bubble"], .flex') || el.parentElement;
-        if (!mediaTaskMap.has(el) && currentTaskId) {
-          mediaTaskMap.set(el, currentTaskId);
+        
+        let activeTaskId = mediaTaskMap.get(el);
+        
+        if (!activeTaskId) {
+          const bubble = el.closest('[data-message-id]');
+          if (bubble) {
+            const msgId = bubble.getAttribute('data-message-id');
+            if (msgId && messageTaskMap[msgId]) {
+              activeTaskId = messageTaskMap[msgId];
+            }
+          }
+        }
+
+        if (!activeTaskId) {
           let p = el.parentElement;
           let depth = 0;
-          while (p && p !== document.body && depth < 6) {
-            mediaTaskMap.set(p, currentTaskId);
+          while (p && p !== document.body && depth < 20) {
+            if (mediaTaskMap.has(p)) { activeTaskId = mediaTaskMap.get(p); break; }
+            p = p.parentElement; depth++;
+          }
+        }
+
+        // 【终极迟滞匹配大招】如果真的是 DOM 脱节（例如浮层 Portal），使用最后一个发出的 taskId
+        if (!activeTaskId && lastDispatchedTaskId) {
+          activeTaskId = lastDispatchedTaskId;
+          log(`[Agent] Fallback to lastDispatchedTaskId: ${activeTaskId}`);
+        }
+
+        if (activeTaskId) {
+          mediaTaskMap.set(el, activeTaskId);
+          let p = el.parentElement;
+          let depth = 0;
+          while (p && p !== document.body && depth < 10) {
+            mediaTaskMap.set(p, activeTaskId);
             p = p.parentElement;
             depth++;
           }
-          log(`[Agent] Imprinted media card with taskId: ${currentTaskId}`);
+          log(`[Agent] Imprinted media card with taskId: ${activeTaskId}`);
         }
 
         // 【物理原媒体截获优先通道】针对图片和视频，分别进行严密的 DOM 选择器寻址，点击原生下载按钮转交看门狗打捞
@@ -1166,6 +1266,17 @@
         if (downloadBtn) {
           if (isAutoSyncEnabled) {
             log(`[Physical Media] Auto Sync ON: Auto clicking download button for ${isVideo ? 'video' : 'image'}...`);
+            
+            // 显式推送认领池，终结后端的乱序重命名！
+            if (activeTaskId) {
+              GM_xmlhttpRequest({
+                method: 'POST', url: CONFIG.downloadAlertUrl,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ taskId: activeTaskId }),
+                onload: () => log(`[Alert] Watchdog notified for Task ${activeTaskId} right before download`)
+              });
+            }
+
             processedImages.add(url);
             downloadBtn.click(); // 触发豆包原生下载 -> 后端 Watchdog 接收
             clearTaskState();
@@ -1178,8 +1289,8 @@
         }
 
         // 【大一统优先通道】如果没找到下载按钮，或者是视频，全部直接尝试 URL 推送！
-        if (isAutoSyncEnabled) {
-          const urlSuccess = await pushUrlToBackend(url, currentTaskId);
+        if (isAutoSyncEnabled && activeTaskId) {
+          const urlSuccess = await pushUrlToBackend(url, activeTaskId);
           if (urlSuccess) {
             clearTaskState();
             return true;
@@ -1188,13 +1299,13 @@
           log(`[URL Push] 降级：用二进制流备用...`);
 
           // URL 推送失败时才用二进制流
-          const success = await downloadAndPushBinaryMedia(url, currentTaskId);
+          const success = await downloadAndPushBinaryMedia(url, activeTaskId);
           if (success) {
             clearTaskState();
             return true;
           }
         } else {
-          // 在手动模式下，视频或其他媒体也被标记挂起，等待用户自行决定。
+          // 在手动模式下，或者是没有 activeTaskId 的游离图，挂起不处理
           processedImages.add(url);
         }
       }
@@ -1283,7 +1394,7 @@
   function initResultMediaSniffer() {
     log('Initializing Global Media Response Sniffer (Zero Polling)...');
     const observer = new PerformanceObserver((list) => {
-      if (!currentTaskId || interactionInProgress) return;
+      if (interactionInProgress || !taskTimeoutTimer) return;
 
       const entries = list.getEntries();
       let hasSuspect = false;
@@ -1307,7 +1418,7 @@
           log(`[Event Driven] Downlink media detected. Waking up after ${randomDebounce}ms to harvest...`);
           for (let i = 0; i < 2; i++) {
             const success = await checkPageForMedia();
-            if (success || !currentTaskId) {
+            if (success) {
               log('[Event Driven] Harvest success and target secured.');
               break;
             }
