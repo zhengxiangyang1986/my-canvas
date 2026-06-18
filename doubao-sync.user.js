@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.32
+// @version      5.4.33
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -27,7 +27,6 @@
   // ============================================================
   // 配置
   // ============================================================
-  const DEBUG = true;
   const CONFIG = {
     // 轮询池：保持在 127.0.0.1（与画板 UI 共享连接池，因为它的生命周期长，属于后台维持）
     pollUrl: 'http://127.0.0.1:18766/api/bridge/pull?target=web-agent-doubao',
@@ -477,7 +476,12 @@
     }
   });
   window.addEventListener('unhandledrejection', (event) => {
-    reportError(`Rejection: ${event.reason}`);
+    // 只报告来自我们自身脚本的错误，忽略豆包前端代码的海量 Promise 报错
+    // 否则这些报错会疯狂调用 GM_xmlhttpRequest，堵死油猴的网络队列！
+    const reason = String(event.reason || '');
+    if (reason.includes('T8') || reason.includes('bridge') || reason.includes('doubao-sync')) {
+      reportError(`Rejection: ${reason}`);
+    }
   });
 
   // ============================================================
