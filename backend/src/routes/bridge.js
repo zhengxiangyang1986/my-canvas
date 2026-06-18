@@ -278,7 +278,7 @@ function getRealDownloadsPath() {
   return defaultPath;
 }
 
-const downloadsPath = getRealDownloadsPath();
+const downloadsPath = config.OUTPUT_DIR;
 console.log(`[Watchdog] 启动看门狗，全天候监�? ${downloadsPath}`);
 
 const processedScanFiles = new Set();
@@ -319,9 +319,9 @@ async function processDownloadedFile(filePath, taskId) {
     // 满足用户意愿：同一个任务的id永远只有一张图，直接硬覆写同一个物理文件！
     const filename = `bridge_media_${taskId}${ext}`;
     const targetPath = path.join(config.OUTPUT_DIR, filename);
-    
-    // 使用带重试的拷贝，防止文件被浏览器锁定导致复制失败从而无法同步前端
-    await copyFileWithRetry(filePath, targetPath);
+
+    // 使用带重试的重命名（移动），确保 output 目录里只留下唯一一份文件
+    await renameFileWithRetry(filePath, targetPath);
     console.log(`[Watchdog] 遵循指令：强制物理覆盖生成最终高清大图 ${filename}`);
 
     // 加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
@@ -360,6 +360,12 @@ const watcher = chokidar.watch(downloadsPath, {
 });
 
 watcher.on('add', (filePath) => {
+  const filename = path.basename(filePath);
+  if (filename.startsWith('bridge_')) {
+    // 过滤掉看门狗自己生成或后端推送的文件，防止死循环
+    return;
+  }
+
   const ext = path.extname(filePath).toLowerCase();
   if (['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.webp'].includes(ext)) {
     const isVideoFile = ['.mp4', '.webm'].includes(ext);
@@ -388,7 +394,7 @@ watcher.on('add', (filePath) => {
   }
 });
 
-async function copyFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
+async function renameFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       if (!fs.existsSync(src)) {
@@ -398,7 +404,8 @@ async function copyFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
       if (stats.size === 0) {
         throw new Error("文件大小为 0，可能尚未完成下载");
       }
-      fs.copyFileSync(src, dest);
+      // 使用 rename 进行重命名（剪切），这样就不会产生两份文件
+      fs.renameSync(src, dest);
       return true;
     } catch (err) {
       if (i === maxRetries - 1) {
