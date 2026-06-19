@@ -522,6 +522,7 @@
 
   async function pushResult(taskId, status, base64Data = null, error = null) {
     return new Promise((resolve) => {
+      /*
       GM_xmlhttpRequest({
         method: 'POST', url: CONFIG.pushUrl,
         headers: { 'Content-Type': 'application/json' },
@@ -529,6 +530,8 @@
         onload: () => resolve(true),
         onerror: () => resolve(false)
       });
+      */
+      resolve(true); // 已根据用户要求临时关闭
     });
   }
 
@@ -1320,6 +1323,7 @@
   function pushUrlToBackend(url, taskId) {
     log(`[URL Push] 推送媒体 URL 到后端直接下载: ${url.substring(0, 80)}...`);
     return new Promise((resolve) => {
+      /*
       GM_xmlhttpRequest({
         method: 'POST',
         url: CONFIG.pushUrlUrl,
@@ -1339,6 +1343,8 @@
           resolve(false);
         }
       });
+      */
+      resolve(true); // 假装成功，阻断后续降级下载并关闭推送
     });
   }
 

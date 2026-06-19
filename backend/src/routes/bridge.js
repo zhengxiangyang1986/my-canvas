@@ -83,7 +83,7 @@ router.get('/pull', (req, res) => {
     const index = waitingClients.indexOf(client);
     if (index !== -1) waitingClients.splice(index, 1);
     if (!res.headersSent) res.json({ success: true, task: null });
-  }, 25000);
+  }, 2000);
   waitingClients.push(client);
 });
 
