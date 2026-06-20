@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.4.33
+// @version      5.6.5
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -33,9 +33,6 @@
     // 推送池：全部改为 localhost！这会在浏览器底层强制开辟第二条完全独立的 6 线程连接池，
     // 彻底防止大图预警/日志请求被长时间的轮询 (pull) 或画板的 SSE 阻塞队列！
     pushUrl: 'http://localhost:18766/api/bridge/push',
-    pushMediaUrl: 'http://localhost:18766/api/bridge/push-media',
-    pushUrlUrl: 'http://localhost:18766/api/bridge/push-url',
-    downloadAlertUrl: 'http://localhost:18766/api/bridge/download-alert',
     logUrl: 'http://localhost:18766/api/bridge/log',
     taskTimeoutMs: 600000,
     debug: false,
@@ -48,15 +45,25 @@
   function log(...args) {
     const msg = args.join(' ');
 
-    // 禁用高频的网络日志推送，防止把油猴内部的 GM_xmlhttpRequest 队列塞满！
-    // 之前高达十几秒的延迟，就是因为日志把队列堵死了，导致真正的警报发不出去！
-    if (CONFIG.debug) {
+    // 主要日志过滤，防止高频心跳或底层重复的 Downlink 拦截信息堵塞真正的网络请求队列
+    const isKeyLog = msg.includes('[Physical Media]') ||
+                      msg.includes('[URL Push]') ||
+                      msg.includes('[Binary Stream]') ||
+                      msg.includes('[Alert]') ||
+                      msg.includes('[Agent]') ||
+                      msg.includes('Found AI-generated') ||
+                      msg.includes('Error:') ||
+                      msg.includes('stealth bridge') ||
+                      msg.includes('initialized');
+
+    if (CONFIG.debug || isKeyLog) {
       try {
         GM_xmlhttpRequest({
           method: 'POST',
           url: CONFIG.logUrl,
           headers: { 'Content-Type': 'application/json' },
-          data: JSON.stringify({ level: 'info', message: msg })
+          data: JSON.stringify({ level: 'info', message: msg }),
+          timeout: 2000
         });
       } catch (e) { }
     }
@@ -128,6 +135,37 @@
     const keys = Object.keys(messageTaskMap);
     if (keys.length > 200) delete messageTaskMap[keys[0]]; // 限制大小，防止挤爆 localStorage
     localStorage.setItem('doubao_messageTaskMap', JSON.stringify(messageTaskMap));
+  }
+
+  function findTaskIdByBubble(bubbleEl) {
+    if (!bubbleEl) return null;
+    
+    // 1. 尝试直接获取
+    const msgId = bubbleEl.getAttribute('data-message-id');
+    if (msgId && messageTaskMap[msgId]) {
+      return messageTaskMap[msgId];
+    }
+    
+    // 2. 向上回溯前序气泡（用于解决视频在几分钟后以独立新气泡追加的问题）
+    try {
+      const chatContainer = getDoubaoChatContainer() || document.body;
+      const allAiBubbles = Array.from(chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(',')));
+      const curIdx = allAiBubbles.indexOf(bubbleEl);
+      if (curIdx !== -1) {
+        for (let i = curIdx - 1; i >= Math.max(0, curIdx - 3); i--) {
+          const prevBubble = allAiBubbles[i];
+          const prevMsgId = prevBubble.getAttribute('data-message-id');
+          if (prevMsgId && messageTaskMap[prevMsgId]) {
+            log(`[TaskId Trace] 追溯成功！将新气泡 ${msgId} 映射到前序消息气泡 ${prevMsgId} 绑定的 Task: ${messageTaskMap[prevMsgId]}`);
+            saveMessageTask(msgId, messageTaskMap[prevMsgId]); // 顺便持久化当前气泡的映射
+            return messageTaskMap[prevMsgId];
+          }
+        }
+      }
+    } catch (e) {
+      log(`[TaskId Trace] 追溯异常: ${e.message}`);
+    }
+    return null;
   }
 
   // 弱引用缓存：绑定 DOM元素 -> taskId，绝对隐身不改 HTML
@@ -229,9 +267,8 @@
     // 1. 最高效：直接向上寻找 data-message-id 祖先
     const bubble = e.target.closest('[data-message-id]');
     if (bubble) {
-      const msgId = bubble.getAttribute('data-message-id');
-      if (msgId && messageTaskMap[msgId]) {
-        foundTaskId = messageTaskMap[msgId];
+      foundTaskId = findTaskIdByBubble(bubble);
+      if (foundTaskId) {
         hitMethod = 'DOM Box (closest Message-ID)';
       }
     }
@@ -340,9 +377,9 @@
         try {
           GM_xmlhttpRequest({
             method: 'POST',
-            url: CONFIG.downloadAlertUrl,
+            url: CONFIG.pushUrl,
             headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ taskId: foundTaskId })
+            data: JSON.stringify({ taskId: foundTaskId, action: 'download-alert' })
           });
           debugMsg += ` => <b>Alert Emitted! (Native Download Allowed)</b>`;
         } catch (err) { }
@@ -371,11 +408,6 @@
   // 均匀随机延迟（轻量级场景使用）
   function randomDelay(min, max) {
     return sleep(min + Math.random() * (max - min));
-  }
-
-  // 拟人化犹豫（0.3s~1.5s）
-  function humanHesitation() {
-    return sleep(humanDelay(600, 0.5));
   }
 
   // ============================================================
@@ -460,13 +492,13 @@
   // 错误上报（静默通道）
   // ============================================================
 
-  async function reportError(errorMsg) {
+  async function reportError(errorMsg, specificTaskId = null) {
     log('Error:', errorMsg);
-    // 这里如果产生超时等错误，我们无所谓是哪个具体的 task，只在必要时通过全局兜底通道汇报
+    const targetTaskId = specificTaskId || lastDispatchedTaskId || 'ALERT';
     GM_xmlhttpRequest({
       method: 'POST', url: CONFIG.pushUrl,
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ taskId: 'ALERT', status: 'error', error: errorMsg })
+      data: JSON.stringify({ taskId: targetTaskId, status: 'error', error: errorMsg })
     });
   }
 
@@ -483,6 +515,157 @@
       reportError(`Rejection: ${reason}`);
     }
   });
+
+  // ============================================================
+  // 文本聊天中转辅助函数
+  // ============================================================
+
+  function extractTextFromBubble(bubbleEl) {
+    try {
+      const clone = bubbleEl.cloneNode(true);
+      
+      // 移除显式操作容器和按钮，不直接移除全局的 svg 以免破坏正文里的 LaTeX 公式
+      const toRemove = clone.querySelectorAll(
+        'button, [class*="operation"], [class*="action"], [class*="toolbar"], [class*="footer"], [class*="feedback"], [class*="share"], [class*="copy"], [class*="like"]'
+      );
+      toRemove.forEach(el => el.remove());
+      
+      let text = clone.innerText || clone.textContent || '';
+      
+      // 针对末尾可能残留的操作文字进行多重清洗
+      const dirtyWords = ['复制', '重新生成', '分享', '踩', '赞', '翻译', '朗读', '声音', '仅文字', '收起'];
+      for (const word of dirtyWords) {
+        text = text.replace(new RegExp(`(\\s|\\n)+${word}\\s*$`, 'g'), '');
+        text = text.replace(new RegExp(`^${word}\\s*$`, 'g'), '');
+      }
+      return text.trim();
+    } catch (e) {
+      // 发生异常时进行基础安全降级
+      let text = bubbleEl.innerText || bubbleEl.textContent || '';
+      text = text.replace(/(复制|重新生成|分享|踩|赞|翻译|朗读)$/g, '').trim();
+      return text;
+    }
+  }
+
+  function isGenerating() {
+    try {
+      // 1. 查找包含“停止生成”或“停止”字样的按钮
+      const stopButtons = document.querySelectorAll('button, [role="button"]');
+      for (const btn of stopButtons) {
+        const txt = (btn.textContent || '').trim();
+        if (txt.includes('停止生成') || txt.includes('停止回复') || txt === '停止') {
+          if (isElementTrulyVisible(btn)) return true;
+        }
+      }
+      
+      // 2. 查找是否有闪烁的打字光标元素（通常有 cursor-blink 或类似的 class）
+      const blinkCursor = document.querySelector('[class*="cursor"], [class*="blink"], [class*="typing"]');
+      if (blinkCursor && isElementTrulyVisible(blinkCursor)) {
+        return true;
+      }
+
+      // 3. 查找是否有明确的加载中、思考中或骨架屏动画
+      const loaders = document.querySelectorAll('[class*="loading"], [class*="thinking"], [class*="skeleton"]');
+      for (const loader of loaders) {
+        if (isElementTrulyVisible(loader)) return true;
+      }
+
+      // 4. 特殊处理：如果最新气泡的文本仅仅是“思考中”或者“...”，则视为仍在生成（思考）阶段
+      const chatContainer = getDoubaoChatContainer() || document.body;
+      const allBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
+      if (allBubbles.length > 0) {
+         const latestBubble = allBubbles[allBubbles.length - 1];
+         const txt = (latestBubble.innerText || latestBubble.textContent || '').replace(/\s+/g, '');
+         if (txt === '...' || txt.includes('思考中') || txt === '深度思考' || txt === '') {
+            // 如果文本极短且符合思考占位符特征，或者完全为空，认为在思考/准备生成
+            // 注意：如果为空也判定为 generating 可能会导致无限等待，但如果为空确实也没生成出内容
+            // 结合长度判断
+            if (txt.length < 10) return true;
+         }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  async function waitBubbleTextDone(initialBubbleEl) {
+    let lastLength = 0;
+    let stableCount = 0;
+    const maxWaitSeconds = 300; // 提高到 5 分钟以适配超长脚本生成
+    let currentBubble = initialBubbleEl;
+
+    for (let s = 0; s < maxWaitSeconds; s++) {
+      await sleep(1000);
+
+      // 【关键修复】：如果气泡被移出 DOM（比如豆包的“思考中”临时气泡被正式气泡替换）
+      // 我们需要自动去寻找当前对话流里的最后一个 AI 气泡
+      if (currentBubble && !currentBubble.isConnected) {
+        try {
+           const chatContainer = getDoubaoChatContainer() || document.body;
+           const allBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
+           if (allBubbles.length > 0) {
+             currentBubble = allBubbles[allBubbles.length - 1]; // 始终追踪最后一个
+           }
+        } catch(e) {}
+      }
+
+      if (!currentBubble) continue;
+
+      const text = extractTextFromBubble(currentBubble);
+      const len = text.length;
+
+      // 只有在没检测到“正在生成/思考”指示时，才进行稳定度的判定
+      if (!isGenerating()) {
+        if (len > 0 && len === lastLength) {
+          stableCount++;
+          // 如果最终提取到的内容非常短，为了防止误判，我们稍微多等几秒
+          const requiredStable = len < 10 ? 10 : 5;
+          if (stableCount >= requiredStable) { 
+            return text;
+          }
+        } else {
+          stableCount = 0;
+          lastLength = len;
+        }
+      } else {
+        // 还在生成/思考中，重置计数器，同步最新长度
+        stableCount = 0;
+        lastLength = len;
+      }
+    }
+    return currentBubble ? extractTextFromBubble(currentBubble) : '';
+  }
+
+  function pushChatTextToBackend(taskId, text) {
+    return new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: CONFIG.pushUrl,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ taskId, status: 'completed', text }),
+        timeout: 5000,
+        onload: (res) => {
+          log(`[Chat Push] 文本结果推送成功. Status: ${res.status}`);
+          resolve(res.status === 200);
+        },
+        onerror: () => {
+          log(`[Chat Push] 失败`);
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  function findBubbleByTaskId(taskId) {
+    const chatContainer = getDoubaoChatContainer() || document.body;
+    const bubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
+    for (const b of bubbles) {
+      const msgId = b.getAttribute('data-message-id');
+      if (msgId && messageTaskMap[msgId] === taskId) {
+        return b;
+      }
+    }
+    return bubbles.length > 0 ? bubbles[bubbles.length - 1] : null;
+  }
 
   // ============================================================
   // 网络层：隐身轮询（指数退避 + 抖动）
@@ -584,40 +767,27 @@
     });
   }
 
-  // --- 焦点生命周期文件注入（从参考脚本吸取） ---
-  async function simulateFileInputUpload(inputElement, url) {
-    const file = await fetchUrlAsFile(url);
-    const dt = new DataTransfer();
-    dt.items.add(file);
-
-    // 1. 模拟 Tab 焦点硬转移（唤醒 React 框架的事件监听器）
-    inputElement.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Tab', keyCode: 9, bubbles: true
-    }));
-    inputElement.focus({ preventScroll: true });
+  // --- 聚焦模拟（用于触发弹窗等UI变化） ---
+  async function simulateFocusAndHover(inputElement) {
+    if (!inputElement) return;
+    const events = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'mousemove'];
+    for (let e of events) {
+      inputElement.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true }));
+    }
+    inputElement.focus();
     inputElement.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-    await randomDelay(80, 150);
-
-    // 2. 单文件注入
-    inputElement.files = dt.files;
-    await randomDelay(50, 100);
-
-    // 3. 严格按真实顺序提交事件
-    inputElement.dispatchEvent(new Event('input', { bubbles: true }));
-    await randomDelay(30, 60);
-    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
-
-    // 4. 散焦退出（完成焦点生命周期）
-    await randomDelay(80, 150);
+    await sleep(20);
     inputElement.blur();
     inputElement.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
   }
 
-  // --- 拖拽模拟（降级方案，含事件间微延迟） ---
-  async function simulateDrop(element, url) {
-    const file = await fetchUrlAsFile(url);
+  // --- 批量拖拽模拟 ---
+  async function simulateDropMultiple(element, urls) {
     const dt = new DataTransfer();
-    dt.items.add(file);
+    for (const url of urls) {
+      const file = await fetchUrlAsFile(url);
+      dt.items.add(file);
+    }
 
     const events = ['dragenter', 'dragover', 'drop'];
     for (const eventType of events) {
@@ -628,65 +798,94 @@
     }
   }
 
-  // --- 极速引擎（保留 5.3.0 原版逻辑但去除所有降速模拟） ---
+  // --- 批量文件输入模拟 ---
+  async function simulateFileInputUploadMultiple(inputElement, urls) {
+    const dt = new DataTransfer();
+    for (const url of urls) {
+      const file = await fetchUrlAsFile(url);
+      dt.items.add(file);
+    }
+    inputElement.files = dt.files;
+    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // --- 极速引擎（修复文本防拦截注入） ---
   async function simulateHumanTyping(element, text) {
     element.focus();
+    await randomDelay(50, 100);
 
-    // 【新增兼容】针对独立的生图富文本页面 (contenteditable)，必须显式设置真实光标，否则 execCommand 会因丢失选区而失效
-    if (element.isContentEditable) {
-      try {
+    let isTextarea = (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT');
+
+    try {
+      // 1. 选中所有文本以备覆盖
+      if (isTextarea) {
+        element.select();
+      } else if (element.isContentEditable) {
         const selection = window.getSelection();
         const range = document.createRange();
         range.selectNodeContents(element);
-        range.collapse(false); // 强制光标到最后
         selection.removeAllRanges();
         selection.addRange(range);
-      } catch (e) {
-        log('Failed to set selection range for contenteditable:', e.message);
       }
-    }
 
-    await randomDelay(50, 100);
+      // 2. 模拟真实用户的剪贴板粘贴事件（许多富文本编辑器如 Lexical/Slate 会监听这个接管内容）
+      const pasteEvent = new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, clipboardData: new DataTransfer()
+      });
+      pasteEvent.clipboardData.setData('text/plain', text);
+      const pasteAccepted = !element.dispatchEvent(pasteEvent);
 
-    let i = 0;
-    while (i < text.length) {
-      // 改为极大块一次性输入，实现粘贴效果
-      const chunkSize = text.length;
-      const chunk = text.slice(i, i + chunkSize);
+      // 3. 原生命令注入：如果组件没有 preventDefault 拦截粘贴，或者是原生 Textarea
+      if (!pasteAccepted || isTextarea) {
+        document.execCommand('insertText', false, text);
+      }
 
-      const success = document.execCommand('insertText', false, chunk);
-      if (!success) {
-        log('execCommand insertText failed, falling back to manual injection');
-        const pasteEvent = new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, clipboardData: new DataTransfer()
-        });
-        pasteEvent.clipboardData.setData('text/plain', chunk);
-        element.dispatchEvent(pasteEvent);
-
-        const tracker = element._valueTracker;
-        if (tracker) tracker.setValue('');
-
-        // 【保险兜底】防患于未然：兼容未来的 contenteditable 富文本结构
-        if ('value' in element) {
-          element.value = (element.value || '') + chunk;
+      // 4. 暴力属性覆盖兜底 + 高级 InputEvent 唤醒 React/Vue
+      if (isTextarea) {
+        const prototype = element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+        if (descriptor && descriptor.set) {
+          descriptor.set.call(element, text);
         } else {
-          // 如果是富文本，最好只修改它的直接文本节点，不过粗暴覆写也可作为终极兜底
-          element.textContent = (element.textContent || '') + chunk;
+          element.value = text;
         }
-        element.dispatchEvent(new Event('input', { bubbles: true }));
+        if (element._valueTracker) {
+          element._valueTracker.setValue('');
+        }
+        
+        // 关键修复：使用 InputEvent 而非普通 Event，模拟真实输入类型为粘贴
+        element.dispatchEvent(new InputEvent('input', { 
+          bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
+        }));
+        element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      } else if (element.isContentEditable) {
+        if (!element.textContent.includes(text)) {
+          element.textContent = text;
+        }
+        element.dispatchEvent(new InputEvent('input', { 
+          bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
+        }));
       }
-
-      i += chunk.length;
-      await sleep(10); // 极短的底层缓冲
+      
+      log('Text injected and React/Vue forced sync done.');
+    } catch (err) {
+      log('Text injection failed, fallback activated:', err.message);
+      if (isTextarea) element.value = text;
+      else element.textContent = text;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
     }
+
+    await sleep(50);
   }
 
   // --- 发送（综合防风控与鲁棒性：回车键 + 焦点唤醒 + 按钮兜底） ---
-  async function simulateSend(inputBox) {
+  async function simulateSend(inputBox, textForSync = '') {
     log('Sending message... ensuring focus on inputBox');
     inputBox.focus();
     inputBox.dispatchEvent(new Event('focus', { bubbles: true }));
     inputBox.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+
+    // 提示词的强制同步逻辑已经统一移至 simulateHumanTyping，此处不再重复同步，以防双份追加。
 
     await sleep(100);
 
@@ -815,34 +1014,72 @@
   // ============================================================
 
   async function switchGenerationTab(model) {
+    if (model === 'web-agent-doubao-chat') return; // 普通聊天无需切换 Tab，直接在当前主窗口进行，避免多余误触
+
     let targetText = '';
     if (model === 'video') targetText = '视频生成';
     else if (model === 'web-agent-doubao') targetText = '图像生成';
+    else if (model === 'web-agent-doubao-chat') targetText = '豆包';
 
     if (!targetText) return;
 
     log(`Checking if we need to switch to tab: ${targetText}`);
 
-    // 加入重试机制，防止 React 渲染延迟导致瞬间找不到
-    for (let attempt = 0; attempt < 3; attempt++) {
-      // 扩大搜索范围，涵盖可能脱离 button 标签的定制 div/span
-      const elements = document.querySelectorAll('button, div, span, [class*="skill"]');
-      for (const el of elements) {
-        if ((el.textContent || '').trim() === targetText) {
-          // 排除掉正好完全等于这四个字的聊天记录气泡
-          if (el.closest('[data-testid="chat-message-list"], .chat-message-container')) continue;
+    const isTabClickable = (node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
 
-          // 优先寻找合法的可点击父容器
-          const clickable = el.closest('button, [role="button"], [class*="skill-item"]') || el;
-          clickable.click();
-          log(`Switched to tab: ${targetText} (Attempt ${attempt + 1})`);
-          await sleep(600); // 留出 React 路由/组件挂载时间
-          return;
+    // 加入重试机制，防止 React 渲染延迟导致瞬间找不到
+    for (let attempt = 0; attempt < 8; attempt++) {
+      // 1. 优先寻找显式的按钮/可点击元素，其文本包含 targetText
+      const clickables = document.querySelectorAll('button, [role="button"], [class*="skill-item"], [class*="button"], [class*="skill-bar-button"]');
+      for (const el of clickables) {
+        if (el.closest('[data-testid="chat-message-list"], .chat-message-container')) continue;
+        
+        const text = (el.textContent || '').trim();
+        // 清洗掉所有空格、换行、零宽字符
+        const cleanText = text.replace(/[\s\u200b\u200c\u200d\ufeff]+/g, '');
+        if (cleanText.includes(targetText)) {
+          const clickable = isTabClickable(el);
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          log(`[Tab Search] Match: "${cleanText}", isClickable: ${clickable} (Attempt ${attempt + 1}, width: ${rect.width}, height: ${rect.height}, display: ${style.display}, visibility: ${style.visibility})`);
+          
+          if (clickable) {
+            el.click();
+            log(`Switched to tab: ${targetText} via clickable element (Attempt ${attempt + 1})`);
+            await sleep(800); // 留出 React 路由/组件挂载时间
+            return;
+          }
         }
       }
-      await sleep(300); // 短暂休眠后重试
+
+      // 2. 降级寻找任何包含该文本的可见 div/span/p 等，再向上寻祖先可点击元素
+      const elements = document.querySelectorAll('div, span, p');
+      for (const el of elements) {
+        if (el.closest('[data-testid="chat-message-list"], .chat-message-container')) continue;
+        
+        const text = (el.textContent || '').trim();
+        const cleanText = text.replace(/[\s\u200b\u200c\u200d\ufeff]+/g, '');
+        if (cleanText === targetText) {
+          const clickable = el.closest('button, [role="button"], [class*="skill-item"], [class*="button"]') || el;
+          const isClickable = isTabClickable(clickable);
+          log(`[Tab Search Fallback] Match: "${cleanText}", isClickable: ${isClickable} (Attempt ${attempt + 1})`);
+          
+          if (isClickable) {
+            clickable.click();
+            log(`Switched to tab: ${targetText} via text node closest clickable (Attempt ${attempt + 1})`);
+            await sleep(800);
+            return;
+          }
+        }
+      }
+      await sleep(400); // 短暂休眠后重试
     }
-    log(`Warning: Tab "${targetText}" not found after retries. Proceeding with default view.`);
+    log("Warning: Tab \"" + targetText + "\" not found after retries. Proceeding with default view.");
   }
 
   function captureNextAiBox(taskId) {
@@ -857,7 +1094,7 @@
     let attempts = 0;
     const interval = setInterval(() => {
       attempts++;
-      if (attempts > 50) {
+      if (attempts > 150) {
         clearInterval(interval);
         return;
       }
@@ -876,7 +1113,7 @@
 
   async function handleTask(task) {
     const { prompt, images, model } = task.payload;
-    const taskModel = model === 'video' ? 'video' : 'web-agent-doubao';
+    const taskModel = model === 'video' ? 'video' : (model === 'web-agent-doubao-chat' ? 'web-agent-doubao-chat' : 'web-agent-doubao');
 
     lastDispatchedTaskId = task.id;
     localStorage.setItem('doubao_lastDispatchedTaskId', task.id);
@@ -887,16 +1124,24 @@
     snapshotAllImages();
 
     // 动态超时保护
-    const timeoutMs = taskModel === 'web-agent-doubao' ? 120000 : CONFIG.taskTimeoutMs;
+    const timeoutMs = (taskModel === 'web-agent-doubao' || taskModel === 'web-agent-doubao-chat') ? 120000 : CONFIG.taskTimeoutMs;
     taskTimeoutTimer = setTimeout(() => {
-      reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`);
+      clearTaskState();
+      reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`, task.id);
     }, timeoutMs);
 
     try {
       // --- 步骤 1：智能切换独立生图/生视频频道 ---
       await switchGenerationTab(taskModel);
 
-      const inputBox = getDoubaoInputBox();
+      // 加固输入框获取逻辑：React 组件渲染可能有延迟，此处添加最长 5 秒的轮询重试
+      let inputBox = null;
+      for (let i = 0; i < 20; i++) {
+        inputBox = getDoubaoInputBox();
+        if (inputBox) break;
+        await sleep(250);
+      }
+
       if (!inputBox) {
         throw new Error(`Selector outdated (v${DOM_SELECTORS.version}): input not found.`);
       }
@@ -906,35 +1151,28 @@
 
       // --- 步骤1：触发文件注入 --- //
       if (images && images.length > 0) {
-        await simulateMouseApproach(inputBox);
+        await simulateFocusAndHover(inputBox);
 
         const fileInput = document.querySelector('input[type="file"][accept*="image"]')
           || document.querySelector('input[type="file"]');
 
         if (fileInput) {
-          log('Uploading via file input with focus lifecycle...');
-          for (const imgUrl of images) {
-            await simulateFileInputUpload(fileInput, imgUrl);
-            await randomDelay(500, 1000);
-          }
+          log('Uploading via file input with focus lifecycle (Batch Mode)...');
+          await simulateFileInputUploadMultiple(fileInput, images);
         } else {
           const uploadArea = getDoubaoUploadArea();
           if (!uploadArea) throw new Error('Upload area not found.');
-          await simulateMouseApproach(uploadArea);
-          log('Fallback: uploading via drag&drop...');
-          for (const imgUrl of images) {
-            await simulateDrop(uploadArea, imgUrl);
-            await randomDelay(500, 1000);
-          }
+          await simulateFocusAndHover(uploadArea);
+          log('Fallback: uploading via drag&drop (Batch Mode)...');
+          await simulateDropMultiple(uploadArea, images);
         }
 
         await randomDelay(800, 1200);
       }
 
-      // --- 步骤2：碎片化打字 ---
-      await simulateMouseApproach(inputBox);
+      // --- 步骤2：极速文本注入 ---
+      await simulateFocusAndHover(inputBox);
       await simulateHumanTyping(inputBox, prompt || 'Hello');
-      await humanHesitation();
 
       // --- 步骤2.5：视觉层嗅探，死磕上传指示器 ---
       if (hasImages) {
@@ -948,18 +1186,44 @@
       captureNextAiBox(task.id);
 
       // --- 步骤3：发送 ---
-      await simulateSend(inputBox);
+      await simulateSend(inputBox, prompt || 'Hello');
 
       // --- 步骤4：发送后等待渲染 + 重新快照 ---
       await sleep(humanDelay(4000, 0.3));
       snapshotAllImages();
 
+      if (taskModel === 'web-agent-doubao-chat') {
+        log(`[Chat Task] 等待 AI 回复打字完成...`);
+        let bubbleEl = null;
+        for (let i = 0; i < 20; i++) {
+          bubbleEl = findBubbleByTaskId(task.id);
+          if (bubbleEl) break;
+          await sleep(500);
+        }
+
+        if (!bubbleEl) {
+          throw new Error('未定位到 AI 回复气泡框。');
+        }
+
+        const replyText = await waitBubbleTextDone(bubbleEl);
+        log(`[Chat Task] 抓取到完整文本回复: ${replyText.slice(0, 100)}...`);
+
+        const pushSuccess = await pushChatTextToBackend(task.id, replyText);
+        if (pushSuccess) {
+          log(`[Chat Task] 成功将文本结果推送到后端。`);
+        } else {
+          log(`[Chat Task] 推送文本失败。`);
+        }
+        clearTaskState();
+        return;
+      }
+
       interactionInProgress = false;
       await pushResult(task.id, 'running');
 
     } catch (e) {
-      interactionInProgress = false;
-      await reportError(`Task failed: ${e.message}`);
+      clearTaskState(); // 抛错时必须立即清理任务状态（清除超时定时器与运行标志），防止后台静默下行检测无限被触发
+      await reportError(`Task failed: ${e.message}`, task.id);
     }
   }
 
@@ -1200,7 +1464,10 @@
 
         if (!isVideo) {
           if (!el.complete) {
-            await new Promise(r => { el.onload = r; el.onerror = r; });
+            await Promise.race([
+              new Promise(r => { el.onload = r; el.onerror = r; }),
+              sleep(5000)
+            ]);
           }
           if (el.naturalWidth < 100 || el.naturalHeight < 100) continue;
         }
@@ -1215,10 +1482,7 @@
         if (!activeTaskId) {
           const bubble = el.closest('[data-message-id]');
           if (bubble) {
-            const msgId = bubble.getAttribute('data-message-id');
-            if (msgId && messageTaskMap[msgId]) {
-              activeTaskId = messageTaskMap[msgId];
-            }
+            activeTaskId = findTaskIdByBubble(bubble);
           }
         }
 
@@ -1260,12 +1524,65 @@
             }
           }
         } else {
-          const itemContainer = el.closest('[class*="video-box"], [class*="video-wrapper"], .flex') || container;
+          // 视频专属：模拟鼠标悬停以唤醒悬浮工具栏
+          // 视频外层大容器类名通常包含 block-video 或 video-hover-button-group-container
+          const hoverEl = el.closest('[class*="block-video"], [class*="video-hover-button-group-container"]') 
+                       || el.closest('[class*="video-box"]') 
+                       || el.parentElement;
+          if (hoverEl) {
+            hoverEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
+            hoverEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+            const rect = hoverEl.getBoundingClientRect();
+            // 派发 mousemove 模拟鼠标滑入容器中心位置，唤醒 React 悬浮渲染
+            hoverEl.dispatchEvent(new MouseEvent('mousemove', { 
+              bubbles: true, 
+              cancelable: true, 
+              clientX: rect.left + rect.width / 2, 
+              clientY: rect.top + rect.height / 2 
+            }));
+          }
+          await sleep(300); // 留出 300ms 让悬浮按钮在 DOM 中长出来
+
+          const itemContainer = el.closest('[class*="block-video"], [class*="video-hover-button-group-container"]') 
+                             || el.closest('[class*="video-box"]') 
+                             || container;
           if (itemContainer) {
-            // 视频专属按钮选择器：防患于未然，抓取所有按钮取最后一个，防止未来出现"分享"干扰
-            const vBtns = itemContainer.querySelectorAll('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
-            if (vBtns.length > 0) {
-              downloadBtn = vBtns[vBtns.length - 1];
+            // 1. 优先定位显式的 video-hover-button-group 悬浮容器
+            const hoverGroup = itemContainer.querySelector('[class*="video-hover-button-group"]');
+            if (hoverGroup) {
+              // 捕获 class 包含 button-group 的 div 元素（即截图中的真实下载键）
+              downloadBtn = hoverGroup.querySelector('[class*="button-group"]') 
+                         || hoverGroup.querySelector('button') 
+                         || hoverGroup.firstElementChild;
+            }
+
+            // 2. 降级模糊检索：遍历卡片内所有交互按钮和带按钮类名的元素
+            if (!downloadBtn) {
+              const buttons = itemContainer.querySelectorAll('button, [role="button"], [class*="button"], [class*="action"]');
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').trim();
+                const label = (btn.getAttribute('aria-label') || '').trim();
+                const title = (btn.getAttribute('title') || '').trim();
+                const cls = btn.className || '';
+                if (
+                  text.includes('下载') || 
+                  label.includes('下载') || 
+                  title.includes('下载') || 
+                  cls.includes('download') ||
+                  cls.includes('button-group')
+                ) {
+                  downloadBtn = btn;
+                  break;
+                }
+              }
+            }
+
+            // 3. 终极降级：用旧的选择器找最后一个按钮
+            if (!downloadBtn) {
+              const vBtns = itemContainer.querySelectorAll('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+              if (vBtns.length > 0) {
+                downloadBtn = vBtns[vBtns.length - 1];
+              }
             }
           }
         }
@@ -1277,9 +1594,10 @@
             // 显式推送认领池，终结后端的乱序重命名！
             if (activeTaskId) {
               GM_xmlhttpRequest({
-                method: 'POST', url: CONFIG.downloadAlertUrl,
+                method: 'POST',
+                url: CONFIG.pushUrl,
                 headers: { 'Content-Type': 'application/json' },
-                data: JSON.stringify({ taskId: activeTaskId }),
+                data: JSON.stringify({ taskId: activeTaskId, action: 'download-alert' }),
                 onload: () => log(`[Alert] Watchdog notified for Task ${activeTaskId} right before download`)
               });
             }
@@ -1295,104 +1613,13 @@
           }
         }
 
-        // 【大一统优先通道】如果没找到下载按钮，或者是视频，全部直接尝试 URL 推送！
-        if (isAutoSyncEnabled && activeTaskId) {
-          const urlSuccess = await pushUrlToBackend(url, activeTaskId);
-          if (urlSuccess) {
-            clearTaskState();
-            return true;
-          }
-
-          log(`[URL Push] 降级：用二进制流备用...`);
-
-          // URL 推送失败时才用二进制流
-          const success = await downloadAndPushBinaryMedia(url, activeTaskId);
-          if (success) {
-            clearTaskState();
-            return true;
-          }
-        } else {
-          // 在手动模式下，或者是没有 activeTaskId 的游离图，挂起不处理
-          processedImages.add(url);
-        }
+        // 对于所有媒体任务（图像和视频），如果没找到原生下载按钮，我们不降级推送数据流，而是等待下一次嗅探重试
+        log(`[Physical Media] 媒体下载按钮暂未就绪，等待下一次嗅探...`);
+        processedImages.delete(url); // 移出已处理缓存，以备下一轮检测
+        continue;
       }
     } catch (e) { /* 静默 */ }
     return false;
-  }
-
-  function pushUrlToBackend(url, taskId) {
-    log(`[URL Push] 推送媒体 URL 到后端直接下载: ${url.substring(0, 80)}...`);
-    return new Promise((resolve) => {
-      /*
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: CONFIG.pushUrlUrl,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ taskId, url, status: 'completed' }),
-        timeout: 5000,
-        onload: (res) => {
-          log(`[URL Push] 后端确认收到 URL. Status: ${res.status}`);
-          resolve(res.status === 200);
-        },
-        onerror: () => {
-          log(`[URL Push] 失败，降级到二进制流...`);
-          resolve(false);
-        },
-        ontimeout: () => {
-          log(`[URL Push] 超时，降级到二进制流...`);
-          resolve(false);
-        }
-      });
-      */
-      resolve(true); // 假装成功，阻断后续降级下载并关闭推送
-    });
-  }
-
-  async function downloadAndPushBinaryMedia(url, taskId) {
-    log(`[Binary Stream] Initiating privileged download for: ${url}`);
-    return new Promise((resolve) => {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: url,
-        responseType: 'blob',
-        onload: (res) => {
-          if (res.status === 200 && res.response) {
-            log(`[Binary Stream] Blob secured. Size: ${(res.response.size / 1024 / 1024).toFixed(2)} MB`);
-            const fd = new FormData();
-            fd.append('taskId', taskId);
-            fd.append('status', 'completed');
-
-            let ext = '.mp4';
-            if (res.response.type) {
-              if (res.response.type.includes('image')) ext = res.response.type.includes('jpeg') ? '.jpg' : '.png';
-              else if (res.response.type.includes('video')) ext = res.response.type.includes('webm') ? '.webm' : '.mp4';
-            } else if (!url.includes('video') && !url.includes('.mp4')) {
-              ext = '.jpg';
-            }
-
-            fd.append('media', res.response, `media${ext}`);
-
-            log(`[Binary Stream] Pushing binary blob to bridge...`);
-            GM_xmlhttpRequest({
-              method: 'POST',
-              url: CONFIG.pushMediaUrl,
-              data: fd,
-              onload: (pushRes) => {
-                log(`[Binary Stream] Transfer complete. Status: ${pushRes.status}`);
-                resolve(pushRes.status === 200);
-              },
-              onerror: () => {
-                log(`[Binary Stream] Transfer failed.`);
-                resolve(false);
-              }
-            });
-          } else {
-            resolve(false);
-          }
-        },
-        onerror: () => resolve(false)
-      });
-    });
   }
 
   // ============================================================

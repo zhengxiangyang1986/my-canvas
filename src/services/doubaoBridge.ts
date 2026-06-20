@@ -25,6 +25,7 @@ export interface BridgeQueryResult {
   urls?: string[];
   rawUrls?: string[];
   error?: string;
+  reply?: string;
 }
 
 export async function queryBridgeTask(taskId: string): Promise<BridgeQueryResult> {

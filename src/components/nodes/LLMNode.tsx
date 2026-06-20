@@ -28,6 +28,7 @@ import { useRunTrigger } from '../../hooks/useRunTrigger';
 import { logBus } from '../../stores/logs';
 import { PORT_COLOR } from '../../config/portTypes';
 import { useDragMaterialStore, type MaterialPayload } from '../../stores/dragMaterial';
+import { submitBridgeTask, queryBridgeTask } from '../../services/doubaoBridge';
 import { useMaterialDropTarget } from '../../hooks/useMaterialDropTarget';
 import { useUpstreamMaterials, type Material } from './useUpstreamMaterials';
 import { useOrderedMaterials } from './useOrderedMaterials';
@@ -371,6 +372,100 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
     return msgs;
   };
 
+  const executeDoubaoLlmBridge = async (prompt: string, images: string[]): Promise<any> => {
+    const base64Array: string[] = [];
+    for (const u of images) {
+      try {
+        const resp = await fetch(u);
+        const blob = await resp.blob();
+        const dataUrl: string = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result || ''));
+          fr.onerror = () => reject(new Error('读取失败'));
+          fr.readAsDataURL(blob);
+        });
+        base64Array.push(dataUrl);
+      } catch (err: any) {
+        logBus.warn(`Doubao LLM 参考图转 base64 失败,跳过: ${u}`, src);
+      }
+    }
+
+    // 智能动态选择模式
+    let bridgeModel = 'web-agent-doubao-chat';
+    const lowerPrompt = prompt.toLowerCase();
+    if (lowerPrompt.includes('视频')) {
+      bridgeModel = 'video';
+    } else if (lowerPrompt.includes('图片') || lowerPrompt.includes('图') || lowerPrompt.includes('画') || lowerPrompt.includes('生图') || lowerPrompt.includes('生成')) {
+      bridgeModel = 'web-agent-doubao';
+    }
+
+    const submit = await submitBridgeTask({
+      prompt,
+      model: bridgeModel,
+      images: base64Array,
+    });
+
+    const taskId = submit.taskId;
+    if (!taskId) throw new Error('Doubao Bridge 未获取到 taskId');
+
+    logBus.info(`Doubao LLM 桥接任务已提交 taskId=${taskId} 进入轮询…`, src);
+    update({ progress: '5%', taskId });
+
+    const maxPoll = 1800;
+    const interval = 2000;
+    let lastProg = '5%';
+
+    for (let i = 0; i < maxPoll; i++) {
+      await new Promise((r) => setTimeout(r, interval));
+
+      const freshNode = getNodes().find(n => n.id === id);
+      const freshData = freshNode?.data as any;
+      if (freshData?.status === 'idle' || freshData?.taskId !== taskId) {
+        throw new Error('用户取消了任务');
+      }
+
+      const q = await queryBridgeTask(taskId);
+      if (q.progress && q.progress !== lastProg) {
+        lastProg = q.progress;
+        update({ progress: q.progress });
+      }
+
+      const st = String(q.status || '').toLowerCase();
+      if (st === 'completed' || st === 'success' || st === 'done') {
+        if (q.reply) {
+          return {
+            content: q.reply,
+            raw: q,
+            model: 'web-agent-doubao-chat',
+          };
+        }
+        const url = q.urls?.[0];
+        if (!url) throw new Error('Doubao 任务完成但未返回内容');
+        const isVideoFile = url.toLowerCase().includes('.mp4') || url.toLowerCase().includes('.webm');
+        if (isVideoFile) {
+          return {
+            content: '已通过 Doubao 网页端为您生成了视频：',
+            videoUrls: q.urls,
+            imageUrls: [],
+            raw: q,
+            model: 'video',
+          };
+        }
+        return {
+          content: '已通过 Doubao 网页端为您生成了图像：',
+          imageUrls: q.urls,
+          raw: q,
+          model: 'web-agent-doubao',
+        };
+      }
+      if (st === 'failed' || st === 'failure' || st === 'error') {
+        throw new Error(q.error || 'Doubao 任务生成失败');
+      }
+    }
+
+    throw new Error('Doubao 生成超时');
+  };
+
   const handleSend = async () => {
     setError(null);
     setStreamingText('');
@@ -448,12 +543,20 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
               ...llmVideoOptions,
               providerParams: d?.providerParams || {},
             })
-          : await generateLlm({ model, messages, temperature, max_tokens: maxTokens, ...llmVideoOptions });
+          : (model === 'web-agent-doubao'
+              ? await executeDoubaoLlmBridge(userText, userImages)
+              : await generateLlm({ model, messages, temperature, max_tokens: maxTokens, ...llmVideoOptions }));
         const replyText = res.content || '';
         const imgs = res.imageUrls || [];
+        const vids = res.videoUrls || [];
         const finalHistory: ChatTurn[] = [
           ...nextHistory,
-          { role: 'assistant', text: replyText, images: imgs.length ? imgs : undefined },
+          { 
+            role: 'assistant', 
+            text: replyText, 
+            images: imgs.length ? imgs : undefined,
+            videos: vids.length ? vids : undefined
+          },
         ];
         update({
           status: 'success',
@@ -462,12 +565,14 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
           prompt: replyText,
           generatedImages: imgs.length ? [...generatedImages, ...imgs] : generatedImages,
           imageUrls: imgs.length ? imgs : undefined,
+          videoUrls: vids.length ? vids : undefined,
           // 同上: 记录被消化的上游文本(非流式分支)
           consumedTexts: orderedTexts.map((t) => t.url).filter((s) => !!s),
         });
         setPickedFiles([]);
         setPickedVideos([]);
-        if (imgs.length) logBus.success(`完成 · ${replyText.length} 字 + ${imgs.length} 图`, src);
+        if (vids.length) logBus.success(`完成 · ${replyText.length} 字 + ${vids.length} 视频`, src);
+        else if (imgs.length) logBus.success(`完成 · ${replyText.length} 字 + ${imgs.length} 图`, src);
         else logBus.success(`完成 · ${replyText.length} 字`, src);
         taskCompletionSound.notifyComplete(id, 'llm');
         // 注意:主项目还会进一步检测 streamed text 中的 generate_image JSON 块自动调
@@ -490,6 +595,8 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
       abortRef.current = null;
       logBus.warn('用户中止流式请求', src);
     }
+    // 为 web-agent-doubao 桥接添加重置清理
+    update({ status: 'idle', taskId: null });
   };
 
   const handleClear = () => {
@@ -1061,7 +1168,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
               </>
             )}
           </button>
-          {status === 'generating' && useStream && !isImgOut && !isExternalSelected && (
+          {status === 'generating' && (model === 'web-agent-doubao' || (useStream && !isImgOut && !isExternalSelected)) && (
             <button
               onClick={handleStop}
               className="px-2 py-1.5 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs"

@@ -151,9 +151,40 @@ router.post('/push-url', (req, res) => {
 
 router.post('/push', (req, res) => {
   try {
-    const { taskId, status, progress, base64Data, error } = req.body;
+    const { taskId, status, progress, base64Data, error, text, action } = req.body;
+
+    if (action === 'download-alert') {
+      const http = require('http');
+      const postData = JSON.stringify({ taskId });
+      const reqLocal = http.request({
+        hostname: '127.0.0.1',
+        port: 18766,
+        path: '/api/bridge/download-alert',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      }, (response) => {
+        response.resume();
+        res.json({ success: true });
+      });
+      reqLocal.on('error', (e) => {
+        res.status(500).json({ error: e.message });
+      });
+      reqLocal.write(postData);
+      reqLocal.end();
+      return;
+    }
+
     const currentRecord = results.get(taskId) || { urls: [] };
-    const update = { ...currentRecord, status: status || currentRecord.status, progress: progress || currentRecord.progress, error: error || currentRecord.error };
+    const update = { 
+      ...currentRecord, 
+      status: status || currentRecord.status, 
+      progress: progress || currentRecord.progress, 
+      error: error || currentRecord.error,
+      reply: text || currentRecord.reply 
+    };
 
     if (base64Data && base64Data.startsWith('data:image/')) {
       const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
@@ -207,7 +238,7 @@ router.get('/inbox/:taskId', (req, res) => {
   const { taskId } = req.params;
   const record = results.get(taskId);
   if (!record) return res.status(404).json({ success: false, error: 'Task not found' });
-  res.json({ success: true, status: record.status, progress: record.progress, error: record.error, urls: record.urls, rawUrls: record.rawUrls });
+  res.json({ success: true, status: record.status, progress: record.progress, error: record.error, urls: record.urls, rawUrls: record.rawUrls, reply: record.reply });
 });
 
 // ============================================================
@@ -327,8 +358,8 @@ async function processDownloadedFile(filePath, taskId) {
     // 加上时间戳，强制前端连带缩略图一起重新加载，打破缓存死锁
     finalUrl = `http://127.0.0.1:18766/output/${filename}?t=${ts}`;
 
-    // 满足用户“现在浏览器不需要删除”的需求，保留浏览器原生下载的原文件，不再调用 fs.unlinkSync
-    console.log(`[Watchdog] 遵循指令：保留浏览器原生下载的原文件: ${filePath}`);
+    // 满足用户意愿：不需要保留浏览器原生下载的原文件，重命名后原文件自动消失
+    console.log(`[Watchdog] 遵循指令：原文件已通过重命名(剪切)处理，不再保留原始物理文件: ${filePath}`);
 
     // 满足用户意愿：同一个任务的id永远只有一张图
     const rawUrls = [finalUrl];
@@ -404,7 +435,7 @@ async function renameFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
       if (stats.size === 0) {
         throw new Error("文件大小为 0，可能尚未完成下载");
       }
-      // 使用 rename 进行重命名（剪切），这样就不会产生两份文件
+      // 遵循用户最新指令：不需要保留原文件，使用 rename 进行重命名（剪切），这样就不会产生两份文件
       fs.renameSync(src, dest);
       return true;
     } catch (err) {

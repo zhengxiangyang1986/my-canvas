@@ -574,6 +574,7 @@ export const LLM_MODELS: LlmModelDef[] = [
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', provider: 'llm-direct', vision: true, contextLength: 2_000_000 },
   { id: 'gpt-5', label: 'GPT-5', provider: 'llm-direct', vision: true, contextLength: 200_000 },
   { id: 'gpt-image-2-all', label: 'GPT Image 2 All (图文)', provider: 'llm-direct', vision: true, imageOutput: true, nonStreaming: true, description: '可自动调用图像生成' },
+  { id: 'web-agent-doubao', label: 'Doubao (Tampermonkey)', provider: 'llm-direct', vision: true, imageOutput: true, nonStreaming: true, description: '通过油猴中转的豆包出图模型' },
 ];
 
 export const DEFAULT_LLM_MODEL = 'gemini-3.5-flash';

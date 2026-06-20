@@ -1,6 +1,6 @@
 import { memo, useMemo, useRef, useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
-import { AlertCircle, Image as ImageIcon, Loader2, Plus, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Image as ImageIcon, Loader2, Plus, Sparkles, X, Square } from 'lucide-react';
 import { useUpstreamMaterials, type Material } from './useUpstreamMaterials';
 import { useOrderedMaterials } from './useOrderedMaterials';
 import MaterialPreviewSection from './MaterialPreviewSection';
@@ -165,6 +165,7 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   // MJ 上传时区分 sref 还是 oref(共用 fileInputRef)
   const mjUploadKindRef = useRef<'sref' | 'oref'>('sref');
+  const runIdRef = useRef(0);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -210,10 +211,21 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
                 progress: '100%', 
                 status: 'completed' 
               });
+            } else if (res.status === 'failed' || res.status === 'error') {
+              update({ status: 'error', error: res.error || '任务在后台已失败', progress: null });
             }
+          } else {
+            // 如果接口返回 success: false（例如后端在重启后没有这个任务记录了）
+            update({ status: 'idle', progress: null });
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          // 网络或服务端异常，直接恢复 idle，不再无限转菊花
+          update({ status: 'idle', progress: null });
+        });
+    } else if (d?.status === 'generating' && !currentTaskId) {
+      // 容错防线：如果状态卡在 generating 但根本没有 taskId，在挂载时自动恢复 idle
+      update({ status: 'idle', progress: null });
     }
   }, []);
   const d = data as any;
@@ -605,8 +617,15 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
     else update({ mjOrefImages: mjOrefImages.filter((_, i) => i !== idx) });
   };
 
+  const handleStop = () => {
+    runIdRef.current++; // 物理废弃当前未完成的回调与轮询
+    update({ status: 'idle', progress: null, error: null, taskId: null });
+    logBus.warn('用户主动停止图像生成', `image:${id.slice(0, 6)}`);
+  };
+
   const handleGenerate = async () => {
     setError(null);
+    const runId = ++runIdRef.current;
     const { prompt: upstreamPrompt, images: upstreamImages } = collectUpstream();
     const resolvedLocalPrompt = resolveMediaMentions(localPrompt, promptMentions, mentionMaterials);
     const comfyProviderPrompt = isComfyExternal
@@ -637,7 +656,12 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
           prompt: promptWithSettings,
           images: allRefs,
           model: apiModel,
-          onUpdate: update,
+          onUpdate: (patch) => {
+            const freshData = getNodes().find(n => n.id === id)?.data as any;
+            if (runId === runIdRef.current && freshData?.status === 'generating') {
+              update(patch);
+            }
+          },
           id,
           logBus,
           taskCompletionSound,
@@ -777,7 +801,11 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
         );
         for (let i = 0; i < maxPoll; i++) {
           await new Promise((r) => setTimeout(r, interval));
-          const q = await queryMjTask(taskId, mjSpeed);
+          // 哨兵防御：如果任务已被用户手动停止或重置，立即退出轮询
+          const freshData = getNodes().find(n => n.id === id)?.data as any;
+          if (runId !== runIdRef.current || freshData?.status === 'idle') return;
+
+          const q = await queryMjTask(freshData.taskId || taskId, mjSpeed);
           if (q.status === 'FAILURE') {
             throw new Error(`MJ 失败: ${q.failReason || '未知错误'}`);
           }
@@ -877,7 +905,11 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
         const maxPoll = minPollCountForTimeout(interval);
         for (let i = 0; i < maxPoll; i++) {
           await new Promise((r) => setTimeout(r, interval));
-          const q = await queryImageFal({ responseUrl, endpoint, requestId });
+          // 哨兵防御：如果任务已被用户手动停止或重置，立即退出轮询
+          const freshData = getNodes().find(n => n.id === id)?.data as any;
+          if (runId !== runIdRef.current || freshData?.status === 'idle') return;
+
+          const q = await queryImageFal({ responseUrl, endpoint, requestId: freshData.taskId || requestId });
           const st = String(q.status || '').toLowerCase();
           if (st === 'completed') {
             const url = q.urls?.[0];
@@ -950,7 +982,11 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
       let lastProg = '5%';
       for (let i = 0; i < maxPoll; i++) {
         await new Promise((r) => setTimeout(r, interval));
-        const q = await queryImageStatus(taskId, apiModel);
+        // 哨兵防御：如果任务已被用户手动停止或重置，立即退出轮询
+        const freshData = getNodes().find(n => n.id === id)?.data as any;
+        if (runId !== runIdRef.current || freshData?.status === 'idle') return;
+
+        const q = await queryImageStatus(freshData.taskId || taskId, apiModel);
         if (q.progress && q.progress !== lastProg) {
           lastProg = q.progress;
           update({ progress: q.progress });
@@ -2038,22 +2074,22 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
           />
         </div>}
 
-        {/* 生成按钮(包含异步进度) */}
-        <button
-          onClick={handleGenerate}
-          disabled={status === 'generating'}
-          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-medium disabled:opacity-50 transition-colors"
-        >
-          {status === 'generating' ? (
-            <>
-              <Loader2 size={12} className="animate-spin" /> 生成中 {d?.progress || ''}
-            </>
-          ) : (
-            <>
-              <Sparkles size={12} /> 生成
-            </>
-          )}
-        </button>
+        {/* 生成按钮(包含异步进度及停止功能) */}
+        {status !== 'generating' ? (
+          <button
+            onClick={handleGenerate}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-medium transition-colors"
+          >
+            <Sparkles size={12} /> 生成
+          </button>
+        ) : (
+          <button
+            onClick={handleStop}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-zinc-500/20 hover:bg-zinc-500/30 text-zinc-200 text-xs font-medium transition-colors"
+          >
+            <Square size={11} className="text-zinc-400" /> 停止({d?.progress || '0%'})
+          </button>
+        )}
 
         {error && (
           <div className="flex items-start gap-1 text-[10px] text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
