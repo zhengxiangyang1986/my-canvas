@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.6.5
+// @version      5.6.6
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -781,6 +781,43 @@
     inputElement.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
   }
 
+  // --- 仿真指针与鼠标事件分发（用于唤醒悬浮工具栏） ---
+  function dispatchStealthHoverEvents(targetEl, clientX, clientY) {
+    if (!targetEl) return;
+    const eventProps = {
+      bubbles: true,
+      cancelable: true,
+      clientX: clientX,
+      clientY: clientY,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      buttons: 0
+    };
+
+    try {
+      targetEl.dispatchEvent(new PointerEvent('pointerover', eventProps));
+      targetEl.dispatchEvent(new PointerEvent('pointerenter', eventProps));
+      targetEl.dispatchEvent(new MouseEvent('mouseover', eventProps));
+      targetEl.dispatchEvent(new MouseEvent('mouseenter', eventProps));
+
+      // 仿真微动
+      const steps = 3;
+      for (let i = 0; i <= steps; i++) {
+        const stepProps = {
+          ...eventProps,
+          clientX: clientX - (steps - i) * 5,
+          clientY: clientY - (steps - i) * 5
+        };
+        targetEl.dispatchEvent(new PointerEvent('pointermove', stepProps));
+        targetEl.dispatchEvent(new MouseEvent('mousemove', stepProps));
+      }
+    } catch (e) {
+      log('Stealth hover events dispatch failed:', e.message);
+    }
+  }
+
   // --- 批量拖拽模拟 ---
   async function simulateDropMultiple(element, urls) {
     const dt = new DataTransfer();
@@ -859,9 +896,8 @@
         }));
         element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       } else if (element.isContentEditable) {
-        if (!element.textContent.includes(text)) {
-          element.textContent = text;
-        }
+        // 关键优化：为了兼容并保护 Lexical / Slate 等富文本的 DOM 节点树，绝对不要强行覆写 textContent，这会破坏 React 组件状态。
+        // 前面的 ClipboardEvent("paste") 或 execCommand 已把内容安全填入，此处直接派发 InputEvent 强制同步数据状态即可。
         element.dispatchEvent(new InputEvent('input', { 
           bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
         }));
@@ -1515,78 +1551,104 @@
 
         // 【物理原媒体截获优先通道】针对图片和视频，分别进行严密的 DOM 选择器寻址，点击原生下载按钮转交看门狗打捞
         let downloadBtn = null;
-        if (!isVideo) {
-          const itemContainer = el.closest('[class*="image-box"]') || container;
-          if (itemContainer) {
+
+        // 1. 定位包裹容器 (可以是图片卡片 image-box，或者是视频卡片 block-video 或 video-hover-button-group)
+        const videoContainer = el.closest('[class*="block-video"], [class*="video-hover-button-group-container"]');
+        const imageContainer = el.closest('[class*="image-box"]');
+        const itemContainer = videoContainer || imageContainer || container;
+        const isVideoCard = isVideo || (videoContainer !== null);
+
+        // 2. 计算中心点并执行【多层级事件穿透唤醒】
+        const rect = itemContainer.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+
+        log(`[Physical Media] Stealth hovering media card...`);
+        dispatchStealthHoverEvents(itemContainer, clientX, clientY);
+        
+        const innerImg = itemContainer.querySelector('img');
+        if (innerImg) {
+          dispatchStealthHoverEvents(innerImg, clientX, clientY);
+        }
+
+        const playerWrapper = itemContainer.querySelector('[class*="player-wrapper"]') || itemContainer.querySelector('[class*="player"]');
+        if (playerWrapper) {
+          dispatchStealthHoverEvents(playerWrapper, clientX, clientY);
+        }
+
+        // 3. 轮询等待操作工具栏渲染就绪 (最长等待 2.0s)
+        log('[Physical Media] Waiting for hover toolbar to render...');
+        let toolReady = false;
+        let elapsed = 0;
+        const checkInterval = 100;
+        const maxTimeout = 2000;
+        const targetSelector = isVideoCard ? '[class*="video-hover-button-group"]' : '[class*="hover-show-tag"]';
+
+        while (elapsed < maxTimeout) {
+          if (itemContainer.querySelector(targetSelector)) {
+            toolReady = true;
+            break;
+          }
+          await sleep(checkInterval);
+          elapsed += checkInterval;
+        }
+
+        // 4. 查找下载按钮
+        if (toolReady) {
+          if (!isVideoCard) {
+            // 图片操作按钮选择器：【保持原有逻辑不变】
             const btns = itemContainer.querySelectorAll('[class*="hover-show-tag"] > div:not([class*="divider"])');
             if (btns.length > 0) {
-              downloadBtn = btns[btns.length - 1]; // 图片的最后一个通常是下载按钮
+              downloadBtn = btns[btns.length - 1]; // 最后一个是下载按钮
+              log('[Physical Media] Locked image download button via classic path');
             }
-          }
-        } else {
-          // 视频专属：模拟鼠标悬停以唤醒悬浮工具栏
-          // 视频外层大容器类名通常包含 block-video 或 video-hover-button-group-container
-          const hoverEl = el.closest('[class*="block-video"], [class*="video-hover-button-group-container"]') 
-                       || el.closest('[class*="video-box"]') 
-                       || el.parentElement;
-          if (hoverEl) {
-            hoverEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
-            hoverEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
-            const rect = hoverEl.getBoundingClientRect();
-            // 派发 mousemove 模拟鼠标滑入容器中心位置，唤醒 React 悬浮渲染
-            hoverEl.dispatchEvent(new MouseEvent('mousemove', { 
-              bubbles: true, 
-              cancelable: true, 
-              clientX: rect.left + rect.width / 2, 
-              clientY: rect.top + rect.height / 2 
-            }));
-          }
-          await sleep(300); // 留出 300ms 让悬浮按钮在 DOM 中长出来
-
-          const itemContainer = el.closest('[class*="block-video"], [class*="video-hover-button-group-container"]') 
-                             || el.closest('[class*="video-box"]') 
-                             || container;
-          if (itemContainer) {
-            // 1. 优先定位显式的 video-hover-button-group 悬浮容器
-            const hoverGroup = itemContainer.querySelector('[class*="video-hover-button-group"]');
-            if (hoverGroup) {
-              // 捕获 class 包含 button-group 的 div 元素（即截图中的真实下载键）
-              downloadBtn = hoverGroup.querySelector('[class*="button-group"]') 
-                         || hoverGroup.querySelector('button') 
-                         || hoverGroup.firstElementChild;
-            }
-
-            // 2. 降级模糊检索：遍历卡片内所有交互按钮和带按钮类名的元素
-            if (!downloadBtn) {
-              const buttons = itemContainer.querySelectorAll('button, [role="button"], [class*="button"], [class*="action"]');
-              for (const btn of buttons) {
-                const text = (btn.textContent || '').trim();
-                const label = (btn.getAttribute('aria-label') || '').trim();
-                const title = (btn.getAttribute('title') || '').trim();
-                const cls = btn.className || '';
-                if (
-                  text.includes('下载') || 
-                  label.includes('下载') || 
-                  title.includes('下载') || 
-                  cls.includes('download') ||
-                  cls.includes('button-group')
-                ) {
-                  downloadBtn = btn;
-                  break;
-                }
-              }
-            }
-
-            // 3. 终极降级：用旧的选择器找最后一个按钮
-            if (!downloadBtn) {
-              const vBtns = itemContainer.querySelectorAll('[class*="video-hover-button-group"] [class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
-              if (vBtns.length > 0) {
-                downloadBtn = vBtns[vBtns.length - 1];
-              }
+          } else {
+            // 视频操作按钮选择器：【升级为高精度检索链】
+            const btns = itemContainer.querySelectorAll(
+              '[class*="video-hover-button-group"] [class*="button-group"] > [class*="action-button"]'
+            );
+            if (btns.length > 0) {
+              downloadBtn = btns[btns.length - 1]; // 最后一个是下载按钮
+              log('[Physical Media] Locked video download button via high-precision path');
             }
           }
         }
 
+        // 5. 模糊检索与降级兜底
+        if (itemContainer && !downloadBtn) {
+          log('[Physical Media] Classic/High-precision path failed. Trying fuzzy query fallback...');
+          const buttons = itemContainer.querySelectorAll('button, [role="button"], [class*="button"], [class*="action"]');
+          for (const btn of buttons) {
+            if (btn.className && btn.className.includes('button-group')) continue;
+
+            const text = (btn.textContent || '').trim();
+            const label = (btn.getAttribute('aria-label') || '').trim();
+            const title = (btn.getAttribute('title') || '').trim();
+            const cls = btn.className || '';
+
+            if (
+              text.includes('下载') || 
+              label.includes('下载') || 
+              title.includes('下载') || 
+              cls.includes('download') ||
+              cls.includes('action-button')
+            ) {
+              downloadBtn = btn;
+              log('[Physical Media] Locked download button via fuzzy fallback');
+              break;
+            }
+          }
+
+          if (!downloadBtn) {
+            // 终极降级
+            const vBtns = itemContainer.querySelectorAll('[class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+            if (vBtns.length > 0) {
+              downloadBtn = vBtns[vBtns.length - 1];
+              log('[Physical Media] Locked download button via last-resort fallback');
+            }
+          }
+        }
+        
         if (downloadBtn) {
           if (isAutoSyncEnabled) {
             log(`[Physical Media] Auto Sync ON: Auto clicking download button for ${isVideo ? 'video' : 'image'}...`);
