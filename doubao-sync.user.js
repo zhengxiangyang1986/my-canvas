@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T8 Doubao Image Sync (Anti-Refresh Edition)
 // @namespace    http://tampermonkey.net/
-// @version      5.6.6
+// @version      5.9.0
 // @description  启用二进制双盲管道：通过GM_xmlhttpRequest直接落盘大视频至后端Multer，彻底终结Base64卡顿与防盗链。
 // @author       Antigravity
 // @match        https://www.doubao.com/chat/*
@@ -120,8 +120,12 @@
   let isAutoSyncEnabled = GM_getValue('autoSync', true);
   let isPolling = false;
   let interactionInProgress = false; // 互斥锁：主流程执行中禁止抓图
+  let pendingMediaCheck = false; // 挂起标志：解决锁定时渲染完成的媒体漏抓
   const processedImages = new Set();
-  let taskTimeoutTimer = null;
+  
+  // -- 新的生命周期控制 --
+  let activeTasks = {}; // taskId -> { prompt, timer }
+  let activeTasksCount = 0;
   let lastDispatchedTaskId = localStorage.getItem('doubao_lastDispatchedTaskId') || null;
 
   // 终极防错：基于豆包 data-message-id 的 DOM 实体强绑定字典
@@ -137,35 +141,142 @@
     localStorage.setItem('doubao_messageTaskMap', JSON.stringify(messageTaskMap));
   }
 
+  // 历史提示词字典：防止任务超时被清理后，仍能通过提示词夺回主权
+  let taskPromptsMap = {};
+  try {
+    taskPromptsMap = JSON.parse(localStorage.getItem('doubao_taskPromptsMap')) || {};
+  } catch(e) {}
+  function saveTaskPrompt(taskId, prompt) {
+    if (!taskId || !prompt) return;
+    taskPromptsMap[taskId] = prompt;
+    const keys = Object.keys(taskPromptsMap);
+    if (keys.length > 200) delete taskPromptsMap[keys[0]]; // 扩容到 200，必须与 messageTaskMap 保持一致，防止老任务落榜被错误覆盖！
+    localStorage.setItem('doubao_taskPromptsMap', JSON.stringify(taskPromptsMap));
+  }
+
+  // 历史已下载媒体防重下字典（核心：防止刷新后滚动历史记录导致重新疯狂下载！）
+  let completedMediaMap = {};
+  try {
+    completedMediaMap = JSON.parse(localStorage.getItem('doubao_completedMediaMap')) || {};
+  } catch(e) {}
+  
+  function getStableMediaUrl(url) {
+    if (!url) return '';
+    if (url.startsWith('data:') || url.startsWith('blob:')) return url; // blob/data 每次刷新必然变化，不追求跨页持久化
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname; // 剔除所有的临时签名和时间戳参数（如 ?x-expires=xxx）
+    } catch(e) {
+      return url.split('?')[0]; // fallback
+    }
+  }
+
+  function markMediaAsCompleted(url) {
+    const stableUrl = getStableMediaUrl(url);
+    if (!stableUrl) return;
+    completedMediaMap[stableUrl] = true;
+    const keys = Object.keys(completedMediaMap);
+    if (keys.length > 500) delete completedMediaMap[keys[0]]; // 维持500个历史记录限制
+    localStorage.setItem('doubao_completedMediaMap', JSON.stringify(completedMediaMap));
+  }
+
+  // ============================================================
+  // 提示词清洗与提取引擎
+  // ============================================================
+  function cleanPromptText(text) {
+    if (!text) return '';
+    return text.replace(/[\u200B-\u200D\uFEFF]/g, '') // 移除零宽字符
+               .replace(/\s+/g, '')                  // 移除所有空白符
+               .replace(/[.,!?;:'"()\[\]{}<>\/\\|~`@#$%^&*\-_=+，。！？；：“”‘’（）《》【】]/g, '') // 移除中英文标点
+               .toLowerCase();                       // 统一转小写
+  }
+
+  function extractPromptFromBubble(bubbleEl) {
+    if (!bubbleEl) return '';
+    
+    // 核心改进：极其精准的“前序兄弟节点”扫描（绝不越界跨消息！）
+    // 如果用 parentElement 无限制向上溯源，会导致点击普通图文消息时，
+    // 误吸取到整个聊天列表里最早的那条视频提示词！
+    
+    // 1. 先在自己肚子里找（防以后豆包结构变动）
+    let quoteEl = bubbleEl.querySelector('.hyphens-auto.truncate');
+    
+    // 2. 如果自己肚子里没有，就只找自己“头顶上”的亲兄弟！
+    // 提示词引用框在 DOM 结构中，永远位于视频框的上方（也就是它的 previousElementSibling）
+    if (!quoteEl) {
+      let sibling = bubbleEl.previousElementSibling;
+      while (sibling && !quoteEl) {
+        if (sibling.classList && sibling.classList.contains('hyphens-auto') && sibling.classList.contains('truncate')) {
+          quoteEl = sibling;
+        } else {
+          quoteEl = sibling.querySelector('.hyphens-auto.truncate');
+        }
+        sibling = sibling.previousElementSibling; // 继续往上一个兄弟节点找
+      }
+    }
+
+    if (quoteEl) {
+      const text = quoteEl.textContent || '';
+      if (text.includes('生成视频')) {
+        return text; 
+      }
+    }
+    
+    return '';
+  }
+
   function findTaskIdByBubble(bubbleEl) {
     if (!bubbleEl) return null;
     
-    // 1. 尝试直接获取
+    // 1. 获取 DOM 出生时的打底烙印（Unified Observer 留下的，或之前成功映射的）
     const msgId = bubbleEl.getAttribute('data-message-id');
-    if (msgId && messageTaskMap[msgId]) {
-      return messageTaskMap[msgId];
-    }
+    const stampedTaskId = msgId ? messageTaskMap[msgId] : null;
+
+    // 2. 尝试提取气泡中的提示词（针对视频等异步任务）
+    const rawBubbleText = extractPromptFromBubble(bubbleEl);
     
-    // 2. 向上回溯前序气泡（用于解决视频在几分钟后以独立新气泡追加的问题）
-    try {
-      const chatContainer = getDoubaoChatContainer() || document.body;
-      const allAiBubbles = Array.from(chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(',')));
-      const curIdx = allAiBubbles.indexOf(bubbleEl);
-      if (curIdx !== -1) {
-        for (let i = curIdx - 1; i >= Math.max(0, curIdx - 3); i--) {
-          const prevBubble = allAiBubbles[i];
-          const prevMsgId = prevBubble.getAttribute('data-message-id');
-          if (prevMsgId && messageTaskMap[prevMsgId]) {
-            log(`[TaskId Trace] 追溯成功！将新气泡 ${msgId} 映射到前序消息气泡 ${prevMsgId} 绑定的 Task: ${messageTaskMap[prevMsgId]}`);
-            saveMessageTask(msgId, messageTaskMap[prevMsgId]); // 顺便持久化当前气泡的映射
-            return messageTaskMap[prevMsgId];
+    if (rawBubbleText) {
+      const cleanedBubbleText = cleanPromptText(rawBubbleText);
+      const pureBubbleText = cleanedBubbleText.replace(/^生成视频/, '').replace(/^生成图片/, '');
+      
+      log(`[Debug Prompt Match] pureBubbleText: "${pureBubbleText.substring(0, 30)}...", len: ${pureBubbleText.length}`);
+      
+      if (pureBubbleText && pureBubbleText.length >= 5) {
+        
+        // 【核心防御】：如果这个气泡已经有烙印了，我们先看看这个老主人的提示词，是不是也和气泡匹配？
+        // 如果匹配，说明这是一个“合法的历史视频”（比如用户往上滚动加载出来的旧视频），绝对不能被新任务夺舍！
+        if (stampedTaskId && taskPromptsMap[stampedTaskId]) {
+          const oldOwnerPrompt = cleanPromptText(taskPromptsMap[stampedTaskId]);
+          if (oldOwnerPrompt && (pureBubbleText.includes(oldOwnerPrompt) || oldOwnerPrompt.includes(pureBubbleText))) {
+            log(`[Prompt Match] 发现合法历史烙印 ${stampedTaskId} 且提示词完美吻合，拒绝夺舍！这是一个旧的视频！`);
+            return stampedTaskId; // 保持旧的归属，不把它当作新任务
           }
         }
+
+        // 如果没有烙印，或者老主人的提示词根本对不上（说明是 Unified Observer 错乱打底了图片任务的 ID），
+        // 那就倒序遍历寻找真正的新主人！
+        const entries = Object.entries(taskPromptsMap).reverse();
+        
+        for (const [taskId, taskPromptRaw] of entries) {
+          const taskPrompt = cleanPromptText(taskPromptRaw);
+          
+          if (taskPrompt && (pureBubbleText.includes(taskPrompt) || taskPrompt.includes(pureBubbleText))) {
+            log(`[Prompt Match] 提示词匹配优先夺回归属权! TaskID: ${taskId}`);
+            if (msgId && messageTaskMap[msgId] !== taskId) {
+              log(`[Prompt Match] 强制修正错误底色烙印: ${messageTaskMap[msgId] || 'None'} -> ${taskId}`);
+              saveMessageTask(msgId, taskId); // 物理夺权
+            }
+            return taskId;
+          }
+        }
+        log(`[Debug Prompt Match] NO MATCH FOUND in taskPromptsMap!`);
       }
-    } catch (e) {
-      log(`[TaskId Trace] 追溯异常: ${e.message}`);
+    } else {
+      log(`[Debug Prompt Match] extractPromptFromBubble returned empty.`);
     }
-    return null;
+
+    // 3. 如果没提取到提示词（普通图片任务），或者全都没匹配上，退回底色烙印
+    return stampedTaskId || null;
   }
 
   // 弱引用缓存：绑定 DOM元素 -> taskId，绝对隐身不改 HTML
@@ -299,7 +410,8 @@
 
     // 【终极降维打击】：空间坐标碰撞法！如果根据DOM树找不到烙印（因为悬浮栏可能被渲染为同级兄弟节点）
     // 我们直接遍历页面上所有带烙印的 img 图片，看看当前鼠标点击的屏幕位置 (e.clientX, e.clientY) 是否落在这张图片区域内！
-    if (!foundTaskId) {
+    // 性能优化：仅在有活跃任务时才执行昂贵的全页面碰撞检测，避免无任务时每次点击都遍历所有媒体元素
+    if (!foundTaskId && activeTasksCount > 0) {
       const imgs = document.querySelectorAll('img, video');
       for (const img of imgs) {
         let imgTaskId = mediaTaskMap.get(img);
@@ -377,7 +489,7 @@
         try {
           GM_xmlhttpRequest({
             method: 'POST',
-            url: CONFIG.pushUrl,
+            url: CONFIG.pushUrl.replace('/push', '/download-alert'),
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ taskId: foundTaskId, action: 'download-alert' })
           });
@@ -430,29 +542,7 @@
     };
   }
 
-  async function simulateMouseApproach(targetEl) {
-    try {
-      const target = getElementCenter(targetEl);
-      const start = {
-        x: target.x + (Math.random() - 0.5) * 400,
-        y: target.y + (Math.random() - 0.5) * 300
-      };
-      const control = {
-        x: (start.x + target.x) / 2 + (Math.random() - 0.5) * 150,
-        y: (start.y + target.y) / 2 + (Math.random() - 0.5) * 100
-      };
-      const steps = 8 + Math.floor(Math.random() * 6);
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        const easedT = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-        const pt = bezierPoint(easedT, start, control, target);
-        targetEl.dispatchEvent(new MouseEvent('mousemove', {
-          clientX: pt.x, clientY: pt.y, bubbles: true, cancelable: true
-        }));
-        await sleep(15 + Math.random() * 25);
-      }
-    } catch (e) { /* 静默 */ }
-  }
+  // (simulateMouseApproach 已移除：死代码，从未被调用)
 
   // ============================================================
   // 防风控：空闲活跃度伪装
@@ -718,11 +808,32 @@
     });
   }
 
-  function clearTaskState() {
+  function clearTaskState(taskId) {
     interactionInProgress = false;
-    if (taskTimeoutTimer) {
-      clearTimeout(taskTimeoutTimer);
-      taskTimeoutTimer = null;
+    
+    if (taskId && activeTasks[taskId]) {
+      clearTimeout(activeTasks[taskId].timer);
+      delete activeTasks[taskId];
+      activeTasksCount--;
+      log(`[Task Lifecycle] Task ${taskId} finished. Active tasks remaining: ${activeTasksCount}`);
+    } else if (!taskId) {
+      for (const tid in activeTasks) {
+        clearTimeout(activeTasks[tid].timer);
+      }
+      activeTasks = {};
+      activeTasksCount = 0;
+      log(`[Task Lifecycle] Force cleared ALL tasks.`);
+    }
+
+    if (activeTasksCount <= 0) {
+      activeTasksCount = 0;
+      stopUnifiedObserver();
+    }
+    
+    if (pendingMediaCheck) {
+      log(`[Agent] Executing pending media check after state clear...`);
+      pendingMediaCheck = false;
+      checkPageForMedia();
     }
   }
 
@@ -1118,33 +1229,83 @@
     log("Warning: Tab \"" + targetText + "\" not found after retries. Proceeding with default view.");
   }
 
-  function captureNextAiBox(taskId) {
-    const chatContainer = getDoubaoChatContainer() || document.body;
-    const existingMsgIds = new Set();
-    const oldBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
-    for (const b of oldBubbles) {
-      const msgId = b.getAttribute('data-message-id');
-      if (msgId) existingMsgIds.add(msgId);
-    }
+  // ============================================================
+  // Unified Observer 核心引擎
+  // ============================================================
+  let unifiedObserver = null;
+  let mediaDebounceTimer = null;
 
-    let attempts = 0;
-    const interval = setInterval(() => {
-      attempts++;
-      if (attempts > 150) {
-        clearInterval(interval);
-        return;
-      }
-      const currentBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
-      for (const b of currentBubbles) {
-        const msgId = b.getAttribute('data-message-id');
-        if (msgId && !existingMsgIds.has(msgId)) {
-          saveMessageTask(msgId, taskId);
-          log(`[DOM Binding] Locked NEW Box ${msgId} to Task ${taskId}`);
-          clearInterval(interval);
-          return;
+  function startUnifiedObserver() {
+    if (unifiedObserver) return;
+
+    const chatContainer = getDoubaoChatContainer() || document.body;
+    log('[Unified Observer] Starting core unified DOM engine...');
+
+    unifiedObserver = new MutationObserver((mutations) => {
+      if (activeTasksCount <= 0) return;
+      
+      let hasMedia = false;
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            
+            // 1. 同步打底烙印逻辑：任何新出生的气泡，无条件先打上 lastDispatchedTaskId
+            const msgEls = node.matches('[data-message-id]') ? [node] : Array.from(node.querySelectorAll('[data-message-id]'));
+            for (const el of msgEls) {
+              const msgId = el.getAttribute('data-message-id');
+              if (msgId && !messageTaskMap[msgId] && lastDispatchedTaskId) {
+                saveMessageTask(msgId, lastDispatchedTaskId);
+                log(`[Unified Observer] 👶 New bubble ${msgId} stamped with base color: ${lastDispatchedTaskId}`);
+              }
+            }
+
+            // 2. 媒体发现逻辑（允许在互斥锁期间发现媒体，只是延后收集）
+            if (node.matches('img, video') || node.querySelector('img, video')) {
+              hasMedia = true;
+            }
+          }
+        } else if (mutation.type === 'attributes' && mutation.attributeName === 'data-message-id') {
+          const el = mutation.target;
+          const msgId = el.getAttribute('data-message-id');
+          if (msgId && !messageTaskMap[msgId] && lastDispatchedTaskId) {
+            saveMessageTask(msgId, lastDispatchedTaskId);
+            log(`[Unified Observer] 👶 Bubble dynamically stamped via attribute: ${msgId} -> ${lastDispatchedTaskId}`);
+          }
         }
       }
-    }, 200);
+
+      if (hasMedia) {
+        clearTimeout(mediaDebounceTimer);
+        mediaDebounceTimer = setTimeout(async () => {
+          log(`[Unified Observer] 🎬 DOM Mutation detected media elements. Waking up to harvest...`);
+          // 连续扫描两次防止渲染未完成
+          for (let i = 0; i < 2; i++) {
+            const success = await checkPageForMedia();
+            if (success) {
+              log('[Unified Observer] Harvest success and target secured.');
+              break;
+            }
+            if (i < 1) await sleep(500);
+          }
+        }, 300);
+      }
+    });
+
+    unifiedObserver.observe(chatContainer, { 
+      childList: true, 
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-message-id']
+    });
+  }
+
+  function stopUnifiedObserver() {
+    if (unifiedObserver) {
+      log('[Unified Observer] No active tasks remaining. Shutting down engine to sleep.');
+      unifiedObserver.disconnect();
+      unifiedObserver = null;
+    }
   }
 
   async function handleTask(task) {
@@ -1153,18 +1314,27 @@
 
     lastDispatchedTaskId = task.id;
     localStorage.setItem('doubao_lastDispatchedTaskId', task.id);
-
+    
     interactionInProgress = true;
+    activeTasksCount++;
+    const timeoutMs = (taskModel === 'web-agent-doubao' || taskModel === 'web-agent-doubao-chat') ? 120000 : CONFIG.taskTimeoutMs;
+
+    activeTasks[task.id] = {
+      prompt: prompt || '',
+      type: taskModel,
+      timer: setTimeout(() => {
+        clearTaskState(task.id);
+        reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`, task.id);
+      }, timeoutMs)
+    };
+
+    saveTaskPrompt(task.id, prompt); // 即使任务超时并从 activeTasks 中移除，仍然可以使用历史提示词进行气泡匹配！
+
+    // 唤醒全局统一引擎！
+    startUnifiedObserver();
 
     // 快照当前页面所有图片
     snapshotAllImages();
-
-    // 动态超时保护
-    const timeoutMs = (taskModel === 'web-agent-doubao' || taskModel === 'web-agent-doubao-chat') ? 120000 : CONFIG.taskTimeoutMs;
-    taskTimeoutTimer = setTimeout(() => {
-      clearTaskState();
-      reportError(`Task Timeout: Exceeded ${timeoutMs / 1000}s`, task.id);
-    }, timeoutMs);
 
     try {
       // --- 步骤 1：智能切换独立生图/生视频频道 ---
@@ -1218,8 +1388,7 @@
         await randomDelay(1000, 2000);
       }
 
-      // --- 步骤2.8：挂起 DOM 监听器，死磕即将在发送后新生成的对话气泡框 ---
-      captureNextAiBox(task.id);
+      // --- 步骤2.8：已经由 handleTask 开始了 UnifiedObserver，无需单独挂载临时监听器 ---
 
       // --- 步骤3：发送 ---
       await simulateSend(inputBox, prompt || 'Hello');
@@ -1250,15 +1419,21 @@
         } else {
           log(`[Chat Task] 推送文本失败。`);
         }
-        clearTaskState();
+        clearTaskState(task.id);
         return;
       }
 
       interactionInProgress = false;
+      if (pendingMediaCheck) {
+        log(`[Agent] Executing pending media check after interaction...`);
+        pendingMediaCheck = false;
+        checkPageForMedia();
+      }
+
       await pushResult(task.id, 'running');
 
     } catch (e) {
-      clearTaskState(); // 抛错时必须立即清理任务状态（清除超时定时器与运行标志），防止后台静默下行检测无限被触发
+      clearTaskState(task.id); // 抛错时必须立即清理任务状态
       await reportError(`Task failed: ${e.message}`, task.id);
     }
   }
@@ -1287,7 +1462,8 @@
     // 否则刚注入图片，DOM 还没来得及长出圆圈，就会被错误地秒判通过！
     await sleep(1000);
 
-    while (true) {
+    const MAX_UPLOAD_WAIT = 60000; // 硬超时 60 秒，防止静默上传失败导致死循环卡死整条流水线
+    while (elapsed < MAX_UPLOAD_WAIT) {
       let isLoading = false;
       let activeIndicatorClass = '';
       let uploadedReadyCount = 0;
@@ -1407,77 +1583,20 @@
       await sleep(intervalMs);
       elapsed += intervalMs;
     }
+
+    // 超时兜底：如果 60 秒内既没有检测到进度圈消失、也没有达到预期图片数，强制放行防卡死
+    log(`[Upload Sniffer] HARD TIMEOUT after ${MAX_UPLOAD_WAIT/1000}s! Force proceeding to prevent pipeline deadlock.`);
+    return false;
   }
 
-  // ============================================================
-  // 网络底板嗅探器
-  // ============================================================
-  function createUploadSniffer(expectedCount) {
-    let uploadedCount = 0;
-    let isFinished = false;
-    let silenceTimer = null;
-    let finishResolver = null;
-    const SILENCE_THRESHOLD = 2500;
-
-    const finish = () => {
-      if (isFinished) return;
-      isFinished = true;
-      log(`[Sniffer] Network silence reached. Confirming ${uploadedCount} uploads finished.`);
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (finishResolver) finishResolver(true);
-    };
-
-    const resetSilenceTimer = () => {
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (uploadedCount >= expectedCount) {
-        silenceTimer = setTimeout(finish, SILENCE_THRESHOLD);
-      }
-    };
-
-    const observer = new PerformanceObserver((list) => {
-      if (isFinished) return;
-      const entries = list.getEntries();
-      for (const entry of entries) {
-        if (entry.initiatorType === 'fetch' || entry.initiatorType === 'xmlhttprequest') {
-          const url = entry.name.toLowerCase();
-          if (url.includes('upload') || url.includes('file') || url.includes('tos') || url.includes('image')) {
-            if (entry.duration > 80) {
-              uploadedCount++;
-              log(`[Sniffer] Intercepted chunk/upload API (Duration: ${Math.round(entry.duration)}ms)`);
-              resetSilenceTimer();
-            }
-          }
-        }
-      }
-    });
-
-    observer.observe({ entryTypes: ['resource'] });
-
-    return {
-      wait: (timeoutMs) => new Promise((resolve) => {
-        if (isFinished) {
-          log(`[Sniffer] Network was already silent. Confirming immediately.`);
-          observer.disconnect();
-          resolve(true);
-          return;
-        }
-        finishResolver = (res) => {
-          observer.disconnect();
-          resolve(res);
-        };
-        setTimeout(() => {
-          if (!isFinished) {
-            log(`[Sniffer] Absolute timeout after ${timeoutMs}ms. Forcing proceed.`);
-            isFinished = true;
-            finishResolver(false);
-          }
-        }, timeoutMs);
-      })
-    };
-  }
+  // (createUploadSniffer 已移除：死代码，从未被调用。原网络底板嗅探器已被 waitForUploadComplete 视觉层嗅探器完全替代)
 
   async function checkPageForMedia() {
-    if (interactionInProgress) return;
+    if (interactionInProgress) {
+      log('[Physical Media] Interaction locked. Marking pendingMediaCheck = true.');
+      pendingMediaCheck = true;
+      return false;
+    }
 
     try {
       const chatContainer = getDoubaoChatContainer() || document.body;
@@ -1490,6 +1609,14 @@
         if (url.includes('avatar') || url.includes('icon') || url.includes('svg')) continue;
         if (url.includes('logo') || url.includes('emoji')) continue;
         if (processedImages.has(url)) continue;
+
+        // 核心防御：跨页面刷新的物理防重下（基于 Stable URL 校验，剔除签名过期因素）
+        const stableUrl = getStableMediaUrl(url);
+        if (stableUrl && completedMediaMap[stableUrl]) {
+          log(`[Physical Media] Media ${stableUrl.substring(0, 50)}... was already downloaded in the past. Skipping historical item.`);
+          processedImages.add(url);
+          continue;
+        }
 
         if (!isInsideAiBubble(el)) {
           processedImages.add(url);
@@ -1657,16 +1784,20 @@
             if (activeTaskId) {
               GM_xmlhttpRequest({
                 method: 'POST',
-                url: CONFIG.pushUrl,
+                url: CONFIG.pushUrl.replace('/push', '/download-alert'),
                 headers: { 'Content-Type': 'application/json' },
                 data: JSON.stringify({ taskId: activeTaskId, action: 'download-alert' }),
                 onload: () => log(`[Alert] Watchdog notified for Task ${activeTaskId} right before download`)
               });
             }
 
+            // 【彻底防史前重下】：一旦触发原生下载，永久记录此媒体到 localStorage
+            markMediaAsCompleted(url);
+            log(`[Physical Media] Marked stable URL as COMPLETED to prevent future scrolling re-downloads.`);
+
             processedImages.add(url);
             downloadBtn.click(); // 触发豆包原生下载 -> 后端 Watchdog 接收
-            clearTaskState();
+            clearTaskState(activeTaskId);
             return true;
           } else {
             log(`[Physical Media] Auto Sync OFF: 媒体已加烙印。挂起等待用户手动点击下载...`);
@@ -1688,47 +1819,7 @@
   // 结果媒体下行嗅探器
   // ============================================================
 
-  let resultDebounceTimer = null;
-
-  function initResultMediaSniffer() {
-    log('Initializing Global Media Response Sniffer (Zero Polling)...');
-    const observer = new PerformanceObserver((list) => {
-      if (interactionInProgress || !taskTimeoutTimer) return;
-
-      const entries = list.getEntries();
-      let hasSuspect = false;
-      for (const entry of entries) {
-        const type = entry.initiatorType;
-        const name = entry.name.toLowerCase();
-
-        if (type === 'img' || type === 'video' || type === 'css' || type === 'fetch' || type === 'xmlhttprequest') {
-          if (!name.includes('avatar') && !name.includes('icon') && !name.includes('svg') && !name.includes('logo')) {
-            hasSuspect = true;
-            break;
-          }
-        }
-      }
-
-      if (hasSuspect) {
-        clearTimeout(resultDebounceTimer);
-        const randomDebounce = Math.floor(Math.random() * 1000) + 500;
-
-        resultDebounceTimer = setTimeout(async () => {
-          log(`[Event Driven] Downlink media detected. Waking up after ${randomDebounce}ms to harvest...`);
-          for (let i = 0; i < 2; i++) {
-            const success = await checkPageForMedia();
-            if (success) {
-              log('[Event Driven] Harvest success and target secured.');
-              break;
-            }
-            if (i < 1) await sleep(500);
-          }
-        }, randomDebounce);
-      }
-    });
-
-    observer.observe({ entryTypes: ['resource'] });
-  }
+  // (原 initResultMediaSniffer 已被 UnifiedObserver 替代并移除)
 
   // ============================================================
   // 启动
@@ -1736,7 +1827,6 @@
 
   function bootstrap() {
     log('Event-Driven Stealth Bridge V5 initialized.');
-    initResultMediaSniffer();
     pollTasks();
     idleActivitySimulator();
   }

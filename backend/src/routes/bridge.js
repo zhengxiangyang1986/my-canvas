@@ -154,26 +154,9 @@ router.post('/push', (req, res) => {
     const { taskId, status, progress, base64Data, error, text, action } = req.body;
 
     if (action === 'download-alert') {
-      const http = require('http');
-      const postData = JSON.stringify({ taskId });
-      const reqLocal = http.request({
-        hostname: '127.0.0.1',
-        port: 18766,
-        path: '/api/bridge/download-alert',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        }
-      }, (response) => {
-        response.resume();
-        res.json({ success: true });
-      });
-      reqLocal.on('error', (e) => {
-        res.status(500).json({ error: e.message });
-      });
-      reqLocal.write(postData);
-      reqLocal.end();
+      // 兼容旧版：转发给下方的 download-alert 处理函数
+      // 但是新版脚本已经直接发往 /download-alert 了
+      res.json({ success: true, warning: 'Please use /download-alert endpoint directly' });
       return;
     }
 
