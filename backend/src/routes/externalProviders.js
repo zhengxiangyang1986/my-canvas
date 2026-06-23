@@ -97,7 +97,16 @@ async function saveOneMediaOutput(url, kind = 'image', options = {}) {
   const dataMatch = text.match(/^data:([^;,]+);base64,(.+)$/i);
   if (dataMatch) {
     const ext = outputExtFromMime(dataMatch[1], defaultExtForKind(kind));
-    return writeOutputBuffer(Buffer.from(dataMatch[2], 'base64'), ext);
+    let buf = Buffer.from(dataMatch[2], 'base64');
+    if (kind === 'image') {
+      try {
+        const sharp = require('sharp');
+        buf = await sharp(buf).withMetadata().toBuffer();
+      } catch (err) {
+        console.warn('Image sanitization failed for base64:', err.message);
+      }
+    }
+    return writeOutputBuffer(buf, ext);
   }
   if (/^https?:\/\//i.test(text)) {
     const fetchImpl = options.fetchImpl || fetch;
@@ -105,7 +114,15 @@ async function saveOneMediaOutput(url, kind = 'image', options = {}) {
     if (!res.ok) throw new Error(`下载扩展平台输出失败：HTTP ${res.status}`);
     const mime = typeof res.headers?.get === 'function' ? res.headers.get('content-type') : '';
     const ext = outputExtFromMime(mime, outputExtFromUrl(text, defaultExtForKind(kind)));
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf = Buffer.from(await res.arrayBuffer());
+    if (kind === 'image') {
+      try {
+        const sharp = require('sharp');
+        buf = await sharp(buf).withMetadata().toBuffer();
+      } catch (err) {
+        console.warn('Image sanitization failed for fetch:', err.message);
+      }
+    }
     return writeOutputBuffer(buf, ext);
   }
   if (text.startsWith('/files/output/')) return text;

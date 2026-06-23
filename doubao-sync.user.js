@@ -618,17 +618,79 @@
 
   function extractTextFromBubble(bubbleEl) {
     try {
-      const clone = bubbleEl.cloneNode(true);
-      
-      // 移除显式操作容器和按钮，不直接移除全局的 svg 以免破坏正文里的 LaTeX 公式
-      const toRemove = clone.querySelectorAll(
+      // 0. 向上寻找能包裹完整消息正文和列表序号的更大父级容器
+      let targetEl = bubbleEl;
+      if (bubbleEl) {
+        const wrapper = bubbleEl.closest('[class*="message"]') || bubbleEl.closest('[class*="chat-item"]') || bubbleEl.parentElement;
+        if (wrapper) {
+          targetEl = wrapper;
+        }
+      }
+
+      // 1. 获取真实气泡内所有的操作按钮、反馈栏等干扰元素
+      const toHide = targetEl.querySelectorAll(
         'button, [class*="operation"], [class*="action"], [class*="toolbar"], [class*="footer"], [class*="feedback"], [class*="share"], [class*="copy"], [class*="like"]'
       );
-      toRemove.forEach(el => el.remove());
       
-      let text = clone.innerText || clone.textContent || '';
+      // 2. 暂时将它们设置为 display: none
+      const originalDisplays = [];
+      toHide.forEach(el => {
+        originalDisplays.push({ el, display: el.style.display });
+        el.style.display = 'none';
+      });
+
+      // 2.5. 针对列表元素（ol/ul/li），如果浏览器未渲染出序号/bullet 文本，进行动态内存补全
+      const tempMarkers = [];
+      try {
+        const lis = targetEl.querySelectorAll('li');
+        lis.forEach(li => {
+          const parentList = li.closest('ol, ul');
+          if (!parentList) return;
+
+          // 获取当前 li 的文本，判断是否已经以序号或 bullet 开头
+          const liText = li.innerText || '';
+          
+          if (parentList.tagName === 'OL') {
+            // 如果是 ordered list，且当前没有以数字开头
+            if (!/^\s*\d+[\.\s、]/.test(liText)) {
+              // 寻找同级 li 确定序号
+              const siblings = Array.from(parentList.children).filter(c => c.tagName === 'LI');
+              const idx = siblings.indexOf(li) + 1;
+              const span = document.createElement('span');
+              span.className = 'temp-sync-marker';
+              span.textContent = `${idx}. `;
+              li.insertBefore(span, li.firstChild);
+              tempMarkers.push(span);
+            }
+          } else if (parentList.tagName === 'UL') {
+            // 如果是 unordered list，且当前没有以 bullet 开头
+            if (!/^\s*[\•\-\*\○\●]/.test(liText)) {
+              const span = document.createElement('span');
+              span.className = 'temp-sync-marker';
+              span.textContent = '• ';
+              li.insertBefore(span, li.firstChild);
+              tempMarkers.push(span);
+            }
+          }
+        });
+      } catch (err) {
+        log(`[Agent] Failed to preprocess list markers: ${err.message}`);
+      }
       
-      // 针对末尾可能残留的操作文字进行多重清洗
+      // 3. 直接在真实文档流中获取 innerText，保证所有 white-space: pre-wrap 等排版样式被 1:1 计算出来
+      let text = targetEl.innerText || targetEl.textContent || '';
+      
+      // 4. 同步恢复原有的 display 状态，以及清除临时的列表序号，零闪烁
+      originalDisplays.forEach(item => {
+        item.el.style.display = item.display;
+      });
+      tempMarkers.forEach(el => {
+        if (el.parentNode) {
+          el.parentNode.removeChild(el);
+        }
+      });
+      
+      // 5. 针对末尾可能残留的操作文字进行多重清洗
       const dirtyWords = ['复制', '重新生成', '分享', '踩', '赞', '翻译', '朗读', '声音', '仅文字', '收起'];
       for (const word of dirtyWords) {
         text = text.replace(new RegExp(`(\\s|\\n)+${word}\\s*$`, 'g'), '');
@@ -683,7 +745,7 @@
     return false;
   }
 
-  async function waitBubbleTextDone(initialBubbleEl) {
+  async function waitBubbleTextDone(initialBubbleEl, taskId) {
     let lastLength = 0;
     let stableCount = 0;
     const maxWaitSeconds = 300; // 提高到 5 分钟以适配超长脚本生成
@@ -696,11 +758,7 @@
       // 我们需要自动去寻找当前对话流里的最后一个 AI 气泡
       if (currentBubble && !currentBubble.isConnected) {
         try {
-           const chatContainer = getDoubaoChatContainer() || document.body;
-           const allBubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
-           if (allBubbles.length > 0) {
-             currentBubble = allBubbles[allBubbles.length - 1]; // 始终追踪最后一个
-           }
+           currentBubble = findBubbleByTaskId(taskId); // 使用严格匹配，杜绝错乱
         } catch(e) {}
       }
 
@@ -754,13 +812,17 @@
   function findBubbleByTaskId(taskId) {
     const chatContainer = getDoubaoChatContainer() || document.body;
     const bubbles = chatContainer.querySelectorAll(DOM_SELECTORS.aiBubble.join(','));
-    for (const b of bubbles) {
+    // 【关键修复】：必须倒序遍历！永远优先匹配最新（最下方）的那个气泡！
+    // 因为如果是老气泡被意外错误打标了相同的 taskId（比如重载未命中 localStorage），
+    // 它们在 DOM 树上方。我们只需最新生成的那个气泡。
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i];
       const msgId = b.getAttribute('data-message-id');
       if (msgId && messageTaskMap[msgId] === taskId) {
         return b;
       }
     }
-    return bubbles.length > 0 ? bubbles[bubbles.length - 1] : null;
+    return null; // 必须匹配 taskId，绝对不可以直接拿最后一个气泡凑数，否则会导致串频
   }
 
   // ============================================================
@@ -848,13 +910,17 @@
   // ============================================================
 
   // --- 文件获取 ---
-  async function fetchUrlAsFile(url, filename = 'reference.png') {
+  async function fetchUrlAsFile(url, filename = 'reference') {
     return new Promise((resolve, reject) => {
       if (url.startsWith('data:')) {
         try {
           const matches = url.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
           if (matches && matches.length === 3) {
             const mime = matches[1];
+            let ext = mime.split('/')[1] || 'png';
+            if (ext === 'jpeg') ext = 'jpg';
+            if (ext === 'quicktime') ext = 'mov';
+            
             const byteCharacters = atob(matches[2]);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
@@ -862,7 +928,7 @@
             }
             const byteArray = new Uint8Array(byteNumbers);
             const blobObj = new Blob([byteArray], { type: mime });
-            resolve(new File([blobObj], filename, { type: mime }));
+            resolve(new File([blobObj], `${filename}_${Date.now()}.${ext}`, { type: mime }));
           } else {
             reject(new Error('Invalid data URI'));
           }
@@ -874,7 +940,11 @@
         method: 'GET', url: url, responseType: 'blob',
         onload: (res) => {
           if (res.status === 200) {
-            resolve(new File([res.response], filename, { type: res.response.type }));
+            const mime = res.response.type || 'image/png';
+            let ext = mime.split('/')[1] || 'png';
+            if (ext === 'jpeg') ext = 'jpg';
+            if (ext === 'quicktime') ext = 'mov';
+            resolve(new File([res.response], `${filename}_${Date.now()}.${ext}`, { type: mime }));
           } else {
             reject(new Error(`Fetch image failed: ${res.status}`));
           }
@@ -1195,7 +1265,7 @@
           log(`[Tab Search] Match: "${cleanText}", isClickable: ${clickable} (Attempt ${attempt + 1}, width: ${rect.width}, height: ${rect.height}, display: ${style.display}, visibility: ${style.visibility})`);
           
           if (clickable) {
-            el.click();
+            await simulatePhysicalClick(el);
             log(`Switched to tab: ${targetText} via clickable element (Attempt ${attempt + 1})`);
             await sleep(800); // 留出 React 路由/组件挂载时间
             return;
@@ -1216,7 +1286,7 @@
           log(`[Tab Search Fallback] Match: "${cleanText}", isClickable: ${isClickable} (Attempt ${attempt + 1})`);
           
           if (isClickable) {
-            clickable.click();
+            await simulatePhysicalClick(clickable);
             log(`Switched to tab: ${targetText} via text node closest clickable (Attempt ${attempt + 1})`);
             await sleep(800);
             return;
@@ -1307,9 +1377,131 @@
     }
   }
 
+  async function simulatePhysicalClick(el) {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = rect.width || 10;
+    const height = rect.height || 10;
+    
+    // 抖动算法：偏移量不超过元素宽高的 15%，最大限制在 ±8px 以内
+    const maxOffsetX = Math.min(8, width * 0.15);
+    const maxOffsetY = Math.min(8, height * 0.15);
+    const offsetX = (Math.random() - 0.5) * 2 * maxOffsetX;
+    const offsetY = (Math.random() - 0.5) * 2 * maxOffsetY;
+    
+    const x = rect.left + width / 2 + offsetX;
+    const y = rect.top + height / 2 + offsetY;
+
+    log(`[Physical Click] Dispatching click lifecycle on <${el.tagName.toLowerCase()}> (jitter offset: ${offsetX.toFixed(1)}px, ${offsetY.toFixed(1)}px)`);
+
+    const props = {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      isTrusted: true
+    };
+
+    // 1. 模拟按下 (PointerDown & MouseDown)
+    el.dispatchEvent(new PointerEvent('pointerdown', props));
+    el.dispatchEvent(new MouseEvent('mousedown', props));
+    el.focus?.();
+
+    // 2. 模拟物理按压延迟：随机等待 50ms ~ 120ms
+    const pressDuration = 50 + Math.random() * 70;
+    await sleep(pressDuration);
+
+    // 3. 模拟抬起并触发点击 (PointerUp & MouseUp & Click)
+    el.dispatchEvent(new PointerEvent('pointerup', props));
+    el.dispatchEvent(new MouseEvent('mouseup', props));
+    el.click();
+  }
+
+  async function setDoubaoVideoDuration(targetSeconds) {
+    const secs = Number(targetSeconds) || 10;
+    if (secs !== 5) {
+      log(`[Duration Select] 时长为 ${secs}s (默认值)，无需触发多余的 DOM 切换交互。`);
+      return;
+    }
+
+    const targetText = '5s';
+    log(`[Duration Select] 开始物理切换时长至: ${targetText}`);
+
+    // 1. 查找触发按钮（图一按钮）
+    let triggerEl = null;
+    const clickables = Array.from(document.querySelectorAll('button, [role="button"], div, span'));
+    for (const el of clickables) {
+      if (el.children.length > 3) continue; // 排除大包裹容器
+      const txt = (el.textContent || '').trim().toLowerCase();
+      if (txt === '5s' || txt === '10s' || txt === '5秒' || txt === '10秒') {
+        triggerEl = el;
+        break;
+      }
+    }
+
+    if (!triggerEl) {
+      log('[Duration Select] 未能定位到时长下拉触发按钮，放弃切换。');
+      return;
+    }
+
+    log('[Duration Select] 成功定位到触发按钮并执行物理点击:', triggerEl.textContent.trim());
+    await simulatePhysicalClick(triggerEl);
+    await sleep(400); // 留给弹出层挂载的时差
+
+    // 2. 定位下拉选项（图二按钮）
+    let optionEl = null;
+    const selectors = [
+      '[role="menuitem"]',
+      '[data-slot="dropdown-menu-item"]',
+      '[class*="option-item"]',
+      '[class*="menu-item"]'
+    ];
+    let items = Array.from(document.querySelectorAll(selectors.join(',')));
+    
+    // 如果没有找到，启动降级扫描（全页扫描候选文字）
+    if (items.length === 0) {
+      const candidates = document.querySelectorAll('div, span, button');
+      for (const c of candidates) {
+        if (c === triggerEl || triggerEl.contains(c)) continue;
+        const txt = (c.textContent || '').trim().toLowerCase();
+        if (txt === targetText || txt === '5秒') {
+          items.push(c);
+        }
+      }
+    }
+
+    log(`[Duration Select] 查找下拉项: 发现 ${items.length} 个潜在菜单项`);
+    
+    for (const item of items) {
+      if (item === triggerEl || triggerEl.contains(item)) continue; // 排除触发器本身
+      const txt = (item.textContent || '').trim().toLowerCase();
+      if (txt === targetText || txt === '5秒') {
+        // 找到匹配的，优先尝试获取其 closest 的可点击包裹层（例如带有 option-item 的 div）
+        optionEl = item.closest('[class*="option-item"], [role="menuitem"], [data-slot="dropdown-menu-item"]') || item;
+        break;
+      }
+    }
+
+    if (optionEl) {
+      log('[Duration Select] 成功定位并执行物理点击 5s 选项:', optionEl.textContent.trim());
+      await simulatePhysicalClick(optionEl);
+    } else {
+      log('[Duration Select] 未能定位到 5s 选项，点击原触发器以安全关闭下拉菜单。');
+      await simulatePhysicalClick(triggerEl);
+    }
+    await sleep(500);
+  }
+
   async function handleTask(task) {
-    const { prompt, images, model } = task.payload;
+    // 【关键修复】：将视频也加入到负载解析中
+    const { prompt, images, videos, model, duration } = task.payload;
     const taskModel = model === 'video' ? 'video' : (model === 'web-agent-doubao-chat' ? 'web-agent-doubao-chat' : 'web-agent-doubao');
+
+    // 统合媒体文件
+    const mediaToUpload = [...(images || []), ...(videos || [])];
+    const hasMedia = mediaToUpload.length > 0;
 
     lastDispatchedTaskId = task.id;
     localStorage.setItem('doubao_lastDispatchedTaskId', task.id);
@@ -1339,6 +1531,11 @@
       // --- 步骤 1：智能切换独立生图/生视频频道 ---
       await switchGenerationTab(taskModel);
 
+      // --- 步骤 1.5：针对视频频道，设置时长 ---
+      if (taskModel === 'video') {
+        await setDoubaoVideoDuration(duration);
+      }
+
       // 加固输入框获取逻辑：React 组件渲染可能有延迟，此处添加最长 5 秒的轮询重试
       let inputBox = null;
       for (let i = 0; i < 20; i++) {
@@ -1351,25 +1548,25 @@
         throw new Error(`Selector outdated (v${DOM_SELECTORS.version}): input not found.`);
       }
 
-      // --- 步骤0：标记含图任务 --- //
-      const hasImages = (images && images.length > 0);
+      // --- 步骤0：不再使用仅仅判断 images 的逻辑，改用 hasMedia --- //
 
       // --- 步骤1：触发文件注入 --- //
-      if (images && images.length > 0) {
+      if (hasMedia) {
         await simulateFocusAndHover(inputBox);
 
+        // 如果找到纯 file 类型的输入框，就能支持视频上传
         const fileInput = document.querySelector('input[type="file"][accept*="image"]')
           || document.querySelector('input[type="file"]');
 
         if (fileInput) {
           log('Uploading via file input with focus lifecycle (Batch Mode)...');
-          await simulateFileInputUploadMultiple(fileInput, images);
+          await simulateFileInputUploadMultiple(fileInput, mediaToUpload);
         } else {
           const uploadArea = getDoubaoUploadArea();
           if (!uploadArea) throw new Error('Upload area not found.');
           await simulateFocusAndHover(uploadArea);
           log('Fallback: uploading via drag&drop (Batch Mode)...');
-          await simulateDropMultiple(uploadArea, images);
+          await simulateDropMultiple(uploadArea, mediaToUpload);
         }
 
         await randomDelay(800, 1200);
@@ -1380,9 +1577,9 @@
       await simulateHumanTyping(inputBox, prompt || 'Hello');
 
       // --- 步骤2.5：视觉层嗅探，死磕上传指示器 ---
-      if (hasImages) {
+      if (hasMedia) {
         log('Awaiting DOM visual layer confirmation for upload completion...');
-        await waitForUploadComplete(images.length);
+        await waitForUploadComplete(mediaToUpload.length);
         log('DOM indicates upload is clear. Waiting randomly for UI finalize...');
         await randomDelay(1000, 2000);
       }
@@ -1409,7 +1606,7 @@
           throw new Error('未定位到 AI 回复气泡框。');
         }
 
-        const replyText = await waitBubbleTextDone(bubbleEl);
+        const replyText = await waitBubbleTextDone(bubbleEl, task.id);
         log(`[Chat Task] 抓取到完整文本回复: ${replyText.slice(0, 100)}...`);
 
         const pushSuccess = await pushChatTextToBackend(task.id, replyText);

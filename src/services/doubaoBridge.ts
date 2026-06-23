@@ -6,6 +6,7 @@ export interface BridgeTaskRequest {
   prompt: string;
   images?: string[]; // base64 images
   model?: string;
+  duration?: number;
 }
 
 export async function submitBridgeTask(req: BridgeTaskRequest): Promise<{ taskId: string }> {
@@ -45,8 +46,9 @@ export async function executeDoubaoBridgeGeneration(options: {
   logBus: any;
   taskCompletionSound: any;
   nodeType: 'image' | 'video';
+  duration?: number;
 }) {
-  const { prompt, images, model, onUpdate, id, logBus, taskCompletionSound, nodeType } = options;
+  const { prompt, images, model, onUpdate, id, logBus, taskCompletionSound, nodeType, duration } = options;
   const src = `${nodeType}:${id.slice(0, 6)}`;
   
   logBus.info(`Doubao Bridge 提交: model=${model} 参考图=${images.length} prompt="${prompt.slice(0, 60)}${prompt.length > 60 ? '…' : ''}"`, src);
@@ -75,6 +77,7 @@ export async function executeDoubaoBridgeGeneration(options: {
     prompt,
     model: nodeType === 'video' ? 'video' : model,
     images: base64Array,
+    duration,
   });
 
   const taskId = submit.taskId;

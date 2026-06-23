@@ -63,7 +63,7 @@ import { LocalNodeAddonSlot } from 'virtual:t8-local-extensions';
  *   - Seedance  (kind=seedance) — 零破坏兼容旧 veo 字段
  * 流程: submit → poll(5s 间隔) → 转存 → 展示
  */
-const VIDEO_POLL_TIMEOUT_SECONDS = 3600;
+const VIDEO_POLL_TIMEOUT_SECONDS = 600;
 const VIDEO_POLL_INTERVAL_MS = 5000;
 const VIDEO_MAX_POLL = Math.ceil((VIDEO_POLL_TIMEOUT_SECONDS * 1000) / VIDEO_POLL_INTERVAL_MS);
 const VIDEO_FAL_POLL_INTERVAL_MS = 6000;
@@ -365,7 +365,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
 
   const stopPoll = () => {
     if (pollTimer.current) {
-      window.clearInterval(pollTimer.current);
+      window.clearTimeout(pollTimer.current);
       pollTimer.current = null;
     }
   };
@@ -401,7 +401,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       const POLL_INT = VIDEO_POLL_INTERVAL_MS;
       const MAX = VIDEO_MAX_POLL; // 60 分钟
       let lastProgress = '';
-      pollTimer.current = window.setInterval(async () => {
+      const tick = async () => {
         elapsed += 1;
         if (elapsed > MAX) {
           stopPoll();
@@ -423,6 +423,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
             logBus.success(`任务完成 → ${r.videoUrl}`, src);
             taskCompletionSound.notifyComplete(id, 'video');
             resolve();
+            return;
           } else if (r.status === 'FAILURE') {
             stopPoll();
             const msg = r.failReason || '生成失败';
@@ -430,6 +431,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
             setError(msg);
             logBus.error(`生成失败: ${msg}`, src);
             reject(new Error(msg));
+            return;
           } else {
             update({ status: 'polling', progress: r.progress || '' });
           }
@@ -437,7 +439,9 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
           // 偶尔失败不停止
           console.warn('轮询出错', e?.message);
         }
-      }, POLL_INT);
+        pollTimer.current = window.setTimeout(tick, POLL_INT);
+      };
+      pollTimer.current = window.setTimeout(tick, POLL_INT);
     });
   };
 
@@ -451,7 +455,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       let elapsed = 0;
       const POLL_INT = VIDEO_FAL_POLL_INTERVAL_MS;
       const MAX = VIDEO_FAL_MAX_POLL; // 60分钟
-      pollTimer.current = window.setInterval(async () => {
+      const tick = async () => {
         elapsed += 1;
         if (elapsed > MAX) {
           stopPoll();
@@ -470,6 +474,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
             logBus.success(`FAL 视频完成 → ${r.videoUrl}`, src);
             taskCompletionSound.notifyComplete(id, 'video');
             resolve();
+            return;
           } else if (r.status === 'failed') {
             stopPoll();
             const msg = r.error || 'FAL 生成失败';
@@ -477,13 +482,16 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
             setError(msg);
             logBus.error(`FAL 生成失败: ${msg}`, src);
             reject(new Error(msg));
+            return;
           } else {
             update({ status: 'polling', progress: `${Math.min(95, Math.round(20 + elapsed / MAX * 75))}%` });
           }
         } catch (e: any) {
           console.warn('FAL 轮询出错', e?.message);
         }
-      }, POLL_INT);
+        pollTimer.current = window.setTimeout(tick, POLL_INT);
+      };
+      pollTimer.current = window.setTimeout(tick, POLL_INT);
     });
   };
 
@@ -521,7 +529,8 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
           id,
           logBus,
           taskCompletionSound,
-          nodeType: 'video'
+          nodeType: 'video',
+          duration
         });
       }
       // ====================================================

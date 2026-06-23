@@ -802,9 +802,8 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
       audioUrl: collected.audios[0] || '',
       audioUrl_1: collected.audios[1] || '', // 透传 Suno 双轨副轨避免串联丢失
       modelUrl: collected.models[0] || '',
-      modelUrls: collected.models.slice(),
-      textSegments: hasNonText ? [] : collected.texts.slice(),
-      segments: hasNonText ? [] : collected.texts.slice(),
+      textSegments: hasNonText ? [] : (overrideText !== '' ? [passText] : collected.texts.slice()),
+      segments: hasNonText ? [] : (overrideText !== '' ? [passText] : collected.texts.slice()),
     };
     const cur: any = {
       prompt: d.prompt || '',

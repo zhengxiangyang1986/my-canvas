@@ -29,6 +29,7 @@
     "dev": "concurrently \"cd backend && npm start\" \"vite\"",
     "dev:vite": "vite",
     "dev:backend": "cd backend && npm start",
+    "test": "vitest run",
     "figma:bridge": "node tools/figma-bridge/server.cjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
@@ -76,10 +77,12 @@
     "cross-env": "^7.0.3",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.9"
   },
   "build": {
     "appId": "cn.t8star.penguin-canvas",

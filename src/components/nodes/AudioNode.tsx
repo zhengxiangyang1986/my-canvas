@@ -77,7 +77,7 @@ const AudioNode = ({ id, data, selected }: NodeProps) => {
 
   const stopPoll = () => {
     if (pollTimer.current) {
-      window.clearInterval(pollTimer.current);
+      window.clearTimeout(pollTimer.current);
       pollTimer.current = null;
     }
   };
@@ -200,7 +200,7 @@ const AudioNode = ({ id, data, selected }: NodeProps) => {
       let elapsed = 0;
       const POLL_INT = SUNO_POLL_INTERVAL_MS;
       const MAX = SUNO_MAX_POLL;
-      pollTimer.current = window.setInterval(async () => {
+      const tick = async () => {
         elapsed += 1;
         if (elapsed > MAX) {
           stopPoll();
@@ -225,6 +225,7 @@ const AudioNode = ({ id, data, selected }: NodeProps) => {
             logBus.success(`完成 ${r.tracks.length} 轨: ${r.tracks.map((t) => t.audioUrl).join(' | ')}`, src);
             taskCompletionSound.notifyComplete(id, 'audio');
             resolve();
+            return;
           } else {
             update({ status: 'polling', progress: `${r.completed}/${r.total} · #${elapsed}` });
             if (elapsed % 3 === 0) logBus.info(`轮询 #${elapsed} · ${r.completed}/${r.total}`, src);
@@ -232,7 +233,9 @@ const AudioNode = ({ id, data, selected }: NodeProps) => {
         } catch (e: any) {
           logBus.warn(`轮询出错: ${e?.message}`, src);
         }
-      }, POLL_INT);
+        pollTimer.current = window.setTimeout(tick, POLL_INT);
+      };
+      pollTimer.current = window.setTimeout(tick, POLL_INT);
     });
   };
 

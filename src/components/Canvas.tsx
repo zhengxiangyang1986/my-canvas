@@ -5289,6 +5289,15 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
       }
     }
 
+    // 清理无输入源的孤立自动生成输出节点
+    const targetIdsWithIncoming = new Set(edges.map((e) => e.target));
+    for (const node of nodes) {
+      const isAutoOutput = node.id.startsWith('output-auto-') || node.id.startsWith('model-3d-preview-auto-');
+      if (isAutoOutput && !targetIdsWithIncoming.has(node.id)) {
+        toRemoveNodeIds.add(node.id);
+      }
+    }
+
     for (const n of nodes) {
       const t = n.type as string;
       if (!t || SKIP_TYPES.has(t)) continue;

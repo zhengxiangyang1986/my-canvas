@@ -214,13 +214,13 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
 
   const syncOutputFromHistory = useCallback((nextHistory: ChatTurn[], keepConsumedTexts = false) => {
     const lastAssistant = [...nextHistory].reverse().find((t) => t.role === 'assistant');
-    const allAssistantImages = nextHistory.flatMap((t) => (t.role === 'assistant' && Array.isArray(t.images) ? t.images : []));
     update({
       history: nextHistory,
       reply: lastAssistant?.text || '',
       prompt: lastAssistant?.text || '',
-      generatedImages: allAssistantImages,
+      generatedImages: lastAssistant?.images && lastAssistant.images.length ? lastAssistant.images : [],
       imageUrls: lastAssistant?.images && lastAssistant.images.length ? lastAssistant.images : [],
+      videoUrls: lastAssistant?.videos && lastAssistant.videos.length ? lastAssistant.videos : [],
       consumedTexts: lastAssistant && keepConsumedTexts ? d?.consumedTexts || [] : [],
     });
   }, [d?.consumedTexts, update]);
@@ -372,9 +372,10 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
     return msgs;
   };
 
-  const executeDoubaoLlmBridge = async (prompt: string, images: string[]): Promise<any> => {
+  const executeDoubaoLlmBridge = async (prompt: string, images: string[], videos: string[]): Promise<any> => {
     const base64Array: string[] = [];
-    for (const u of images) {
+    const mediaUrls = [...images, ...videos];
+    for (const u of mediaUrls) {
       try {
         const resp = await fetch(u);
         const blob = await resp.blob();
@@ -390,13 +391,16 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
       }
     }
 
-    // 智能动态选择模式
-    let bridgeModel = 'web-agent-doubao-chat';
-    const lowerPrompt = prompt.toLowerCase();
-    if (lowerPrompt.includes('视频')) {
-      bridgeModel = 'video';
-    } else if (lowerPrompt.includes('图片') || lowerPrompt.includes('图') || lowerPrompt.includes('画') || lowerPrompt.includes('生图') || lowerPrompt.includes('生成')) {
+    // 根据下拉菜单选择执行模式
+    let bridgeModel = 'web-agent-doubao-chat'; // 默认推理聊天
+    const selectedMode = d?.doubaoMode || 'chat';
+    
+    if (selectedMode === 'image') {
       bridgeModel = 'web-agent-doubao';
+    } else if (selectedMode === 'video') {
+      bridgeModel = 'video';
+    } else if (selectedMode === 'chat') {
+      bridgeModel = 'web-agent-doubao-chat';
     }
 
     const submit = await submitBridgeTask({
@@ -521,6 +525,9 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
           history: finalHistory,
           reply: replyText,
           prompt: replyText, // 下游可作为 prompt 消费
+          imageUrls: undefined,
+          generatedImages: undefined,
+          videoUrls: undefined,
           // 记录本轮被「消化」的上游文本: 下游 useUpstreamMaterials 聚合时
           // 会跳过这些文本, 避免「原始 TextNode + LLM 优化结果」同时出现 2 条文本。
           consumedTexts: orderedTexts.map((t) => t.url).filter((s) => !!s),
@@ -544,7 +551,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
               providerParams: d?.providerParams || {},
             })
           : (model === 'web-agent-doubao'
-              ? await executeDoubaoLlmBridge(userText, userImages)
+              ? await executeDoubaoLlmBridge(userText, userImages, userVideos)
               : await generateLlm({ model, messages, temperature, max_tokens: maxTokens, ...llmVideoOptions }));
         const replyText = res.content || '';
         const imgs = res.imageUrls || [];
@@ -563,7 +570,7 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
           history: finalHistory,
           reply: replyText,
           prompt: replyText,
-          generatedImages: imgs.length ? [...generatedImages, ...imgs] : generatedImages,
+          generatedImages: imgs.length ? imgs : undefined,
           imageUrls: imgs.length ? imgs : undefined,
           videoUrls: vids.length ? vids : undefined,
           // 同上: 记录被消化的上游文本(非流式分支)
@@ -888,6 +895,22 @@ const LLMNode = ({ id, data, selected }: NodeProps) => {
             ))}
           </select>
         </div>}
+
+        {/* Doubao 模式选择 */}
+        {!isExternalSelected && model === 'web-agent-doubao' && (
+          <div>
+            <label className="text-[10px] text-emerald-400/80 block mb-1">执行模式</label>
+            <select
+              value={d?.doubaoMode || 'chat'}
+              onChange={(e) => update({ doubaoMode: e.target.value })}
+              className="w-full rounded bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 text-xs text-emerald-200 outline-none focus:border-emerald-500/40"
+            >
+              <option value="chat" className="bg-zinc-900 text-white">推理聊天模式 (默认)</option>
+              <option value="image" className="bg-zinc-900 text-white">图像生成</option>
+              <option value="video" className="bg-zinc-900 text-white">视频生成</option>
+            </select>
+          </div>
+        )}
 
         {/* 温度 / max_tokens / 流式 */}
         <div className="grid grid-cols-3 gap-1.5">
