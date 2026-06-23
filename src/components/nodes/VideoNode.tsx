@@ -383,6 +383,9 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       duration: def.defaultDuration ?? def.durations?.[0],
       resolution: def.defaultResolution || '',
       ...(nextModel === 'grok-imagine-video-1.5' ? { gkfMode: 'image_to_video' } : {}),
+      providerSource: 'zhenzhen',
+      providerId: '',
+      providerModel: ''
     });
   };
 
@@ -463,7 +466,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
           if (elapsed % 10 === 0) logBus.debug(`[FAL ${elapsed}/${MAX}] status=${r.status}`, src);
           if (r.status === 'completed' && r.videoUrl) {
             stopPoll();
-            update({ status: 'success', videoUrl: r.videoUrl, progress: '100%' });
+            update({ status: 'success', videoUrl: r.videoUrl, videoUrls: [], remoteVideoUrls: [], progress: '100%' });
             logBus.success(`FAL 视频完成 → ${r.videoUrl}`, src);
             taskCompletionSound.notifyComplete(id, 'video');
             resolve();
@@ -500,10 +503,14 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
       return;
     }
     taskCompletionSound.primeAudio();
-    update({ status: 'submitting', error: null, videoUrl: null, taskId: null });
+    update({
+      status: 'submitting',
+      error: null,
+      taskId: null,
+    });
     try {
       // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
-      if (apiModel === 'web-agent-doubao') {
+      if (!isExternalSelected && apiModel === 'web-agent-doubao') {
         const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
         const promptWithSettings = `${finalPrompt} (视频比例: ${ratio}, 时长: ${duration}秒)`;
         return await executeDoubaoBridgeGeneration({
@@ -639,7 +646,7 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
 
         const r = await submitVideoFal(falReq);
         if (r.sync && r.videoUrl) {
-          update({ status: 'success', videoUrl: r.videoUrl, lastPrompt: finalPrompt, progress: '100%' });
+          update({ status: 'success', videoUrl: r.videoUrl, videoUrls: [], remoteVideoUrls: [], lastPrompt: finalPrompt, progress: '100%' });
           logBus.success(`FAL 同步完成 → ${r.videoUrl}`, src);
           taskCompletionSound.notifyComplete(id, 'video');
         } else {
@@ -1182,8 +1189,10 @@ const VideoNode = ({ id, data, selected }: NodeProps) => {
                 onChange={(e) => update({ duration: Number(e.target.value) })}
               className="w-full rounded bg-white/5 border border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-white/30"
             >
-                {durationOptions.map((s) => (
-                  <option key={s} value={s} className="bg-zinc-900">{s}s</option>
+                {durationOptions.filter(s => !(isAgensVideo && Number(s) === 30)).map((s) => (
+                  <option key={s} value={s} className="bg-zinc-900">
+                    {s}s{isAgensVideo && Number(s) === 18 ? ' (智能关键帧)' : ''}
+                  </option>
                 ))}
               </select>
             </div>

@@ -253,6 +253,7 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
   const providerParams = (d?.providerParams && typeof d.providerParams === 'object') ? d.providerParams : {};
   const isModelScopeExternal = isExternalSelected && providerSelection.provider?.protocol === 'modelscope';
   const isComfyExternal = isExternalSelected && providerSelection.provider?.protocol === 'comfyui';
+  const isAgensImage = isExternalSelected && externalProviderModel.toLowerCase().includes('agnes');
   const comfyWorkflow = isComfyExternal
     ? providerSelection.provider?.comfyuiConfig?.workflows?.find((workflow) => workflow.id === externalProviderModel || workflow.name === externalProviderModel)
     : undefined;
@@ -529,7 +530,13 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
   // 切换模型时,如果当前比例/尺寸不在新模型选项里则重置
   const switchModel = (mId: string) => {
     const newDef = IMAGE_MODELS.find((m) => m.id === mId) || IMAGE_MODELS[0];
-    const patch: any = { model: mId, apiModel: newDef.apiModel };
+    const patch: any = { 
+      model: mId, 
+      apiModel: newDef.apiModel,
+      providerSource: 'zhenzhen',
+      providerId: '',
+      providerModel: ''
+    };
     if (newDef.paramKind === 'mj') {
       if (!d?.mjVersion) patch.mjVersion = DEFAULT_MJ_VERSION;
       if (!d?.mjAr) patch.mjAr = DEFAULT_MJ_RATIO;
@@ -642,14 +649,19 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
       return;
     }
     taskCompletionSound.primeAudio();
-    update({ status: 'generating', progress: '0%', error: null });
+    update({
+      status: 'generating',
+      progress: '0%',
+      error: null,
+      taskId: null,
+    });
     try {
       // collectUpstream 已返回「本地上传 + 上游接入」按用户拖拽顺序合并后的列表,
       // 这里不再二次叠加 refImages, 避免本地参考图重复传递。
       const allRefs = upstreamImages.slice(0, maxRefs);
 
       // ====== DOUBAO WEB AGENT BRIDGE (可随时安全移除) ======
-      if (apiModel === 'web-agent-doubao') {
+      if (!isExternalSelected && apiModel === 'web-agent-doubao') {
         const { executeDoubaoBridgeGeneration } = await import('../../services/doubaoBridge');
         const promptWithSettings = finalPrompt;
         return await executeDoubaoBridgeGeneration({
@@ -834,6 +846,7 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
               progress: '100%',
               imageUrl: final,
               imageUrls: all,
+              remoteImageUrls: [],
               lastPrompt: finalPrompt,
               usedI2I: allRefs.length > 0 || mjSrefImages.length > 0 || mjOrefImages.length > 0,
             });
@@ -884,6 +897,8 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
             status: 'success',
             progress: '100%',
             imageUrl: submit.urls[0],
+            imageUrls: submit.urls || [],
+            remoteImageUrls: [],
             lastPrompt: finalPrompt,
             usedI2I: allRefs.length > 0,
           });
@@ -919,6 +934,8 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
               status: 'success',
               progress: '100%',
               imageUrl: url,
+              imageUrls: q.urls || [],
+              remoteImageUrls: [],
               lastPrompt: finalPrompt,
               usedI2I: allRefs.length > 0,
             });
@@ -1569,7 +1586,7 @@ const ImageNode = ({ id, data, selected }: NodeProps) => {
                   style={{ background: '#18181b', color: '#ffffff' }}
                   className="w-full rounded border border-white/10 px-2 py-1 text-xs outline-none focus:border-white/30"
                 >
-                  {modelDef.sizes.map((s) => (
+                  {modelDef.sizes.filter(s => !(isAgensImage && s.toLowerCase().includes('4k'))).map((s) => (
                     <option key={s} value={s} style={{ background: '#18181b', color: '#ffffff' }}>{s}</option>
                   ))}
                 </select>

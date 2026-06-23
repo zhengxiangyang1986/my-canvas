@@ -68,8 +68,7 @@
       } catch (e) { }
     }
 
-    // 直接输出到网页控制台，不走网络！
-    console.log(`[T8 Doubao Sync]`, msg);
+    // 直接输出到画布内部雷达浮层，不在真实浏览器的控制台留痕（反风控要求）
     if (typeof debugLog === 'function') debugLog(`<span style="color:#aaa;">${msg}</span>`);
   }
 
@@ -489,9 +488,10 @@
         try {
           GM_xmlhttpRequest({
             method: 'POST',
-            url: CONFIG.pushUrl.replace('/push', '/download-alert'),
+            url: CONFIG.pushUrl,
             headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ taskId: foundTaskId, action: 'download-alert' })
+            data: JSON.stringify({ taskId: foundTaskId, action: 'download-alert' }),
+            onload: () => log(`[Alert] Watchdog manual alert successfully reached backend.`)
           });
           debugMsg += ` => <b>Alert Emitted! (Native Download Allowed)</b>`;
         } catch (err) { }
@@ -523,8 +523,14 @@
   }
 
   // ============================================================
-  // 防风控：贝塞尔曲线鼠标轨迹模拟
+  // 防风控：贝塞尔曲线鼠标轨迹模拟与仿生环境数据
   // ============================================================
+
+  let vMouse = { 
+    x: window.innerWidth / 2 + (Math.random() - 0.5) * 100, 
+    y: window.innerHeight / 2 + (Math.random() - 0.5) * 100,
+    pointerId: Math.floor(Math.random() * 10) + 1 
+  };
 
   function getElementCenter(el) {
     const rect = el.getBoundingClientRect();
@@ -881,52 +887,83 @@
   // --- 聚焦模拟（用于触发弹窗等UI变化） ---
   async function simulateFocusAndHover(inputElement) {
     if (!inputElement) return;
-    const events = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'mousemove'];
-    for (let e of events) {
-      inputElement.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true }));
+    
+    const rect = inputElement.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      await glideMouseTo(inputElement, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    } else {
+      const events = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'mousemove'];
+      for (let e of events) {
+        inputElement.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true }));
+      }
     }
+    
     inputElement.focus();
     inputElement.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     await sleep(20);
-    inputElement.blur();
-    inputElement.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
   }
 
-  // --- 仿真指针与鼠标事件分发（用于唤醒悬浮工具栏） ---
-  function dispatchStealthHoverEvents(targetEl, clientX, clientY) {
+  // --- 仿真指针与鼠标事件分发（带有补全的高级坐标、动态 PointerID 递增） ---
+  function createPointerProps(x, y, dx = 0, dy = 0) {
+    return {
+      bubbles: true, cancelable: true,
+      clientX: x, clientY: y,
+      screenX: window.screenX + x, screenY: window.screenY + y,
+      pageX: window.scrollX + x, pageY: window.scrollY + y,
+      movementX: dx, movementY: dy,
+      pointerId: vMouse.pointerId, pointerType: 'mouse',
+      isPrimary: true, button: 0, buttons: 0
+    };
+  }
+
+  // 利用贝塞尔曲线移动虚拟鼠标从当前位置到目标元素中心
+  async function glideMouseTo(targetEl, targetX, targetY) {
     if (!targetEl) return;
-    const eventProps = {
-      bubbles: true,
-      cancelable: true,
-      clientX: clientX,
-      clientY: clientY,
-      pointerId: 1,
-      pointerType: 'mouse',
-      isPrimary: true,
-      button: 0,
-      buttons: 0
+    vMouse.pointerId++; 
+    
+    const p0 = { x: vMouse.x, y: vMouse.y };
+    const p2 = { x: targetX, y: targetY };
+    const dist = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+    
+    // 如果极近，不需要长轨迹
+    if (dist < 5) {
+      const finalProps = createPointerProps(targetX, targetY);
+      try {
+        targetEl.dispatchEvent(new PointerEvent('pointerover', finalProps));
+        targetEl.dispatchEvent(new PointerEvent('pointerenter', finalProps));
+        targetEl.dispatchEvent(new MouseEvent('mouseover', finalProps));
+        targetEl.dispatchEvent(new MouseEvent('mouseenter', finalProps));
+      } catch(e) {}
+      vMouse.x = targetX; vMouse.y = targetY;
+      return;
+    }
+
+    const p1 = {
+      x: p0.x + (p2.x - p0.x) * 0.5 + (Math.random() - 0.5) * dist * 0.4,
+      y: p0.y + (p2.y - p0.y) * 0.5 + (Math.random() - 0.5) * dist * 0.4
     };
 
-    try {
-      targetEl.dispatchEvent(new PointerEvent('pointerover', eventProps));
-      targetEl.dispatchEvent(new PointerEvent('pointerenter', eventProps));
-      targetEl.dispatchEvent(new MouseEvent('mouseover', eventProps));
-      targetEl.dispatchEvent(new MouseEvent('mouseenter', eventProps));
-
-      // 仿真微动
-      const steps = 3;
-      for (let i = 0; i <= steps; i++) {
-        const stepProps = {
-          ...eventProps,
-          clientX: clientX - (steps - i) * 5,
-          clientY: clientY - (steps - i) * 5
-        };
-        targetEl.dispatchEvent(new PointerEvent('pointermove', stepProps));
-        targetEl.dispatchEvent(new MouseEvent('mousemove', stepProps));
-      }
-    } catch (e) {
-      log('Stealth hover events dispatch failed:', e.message);
+    const steps = Math.max(5, Math.min(25, Math.floor(dist / 20)));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const pt = bezierPoint(t, p0, p1, p2);
+      const props = createPointerProps(pt.x, pt.y, pt.x - vMouse.x, pt.y - vMouse.y);
+      try {
+        const elAtPoint = document.elementFromPoint(pt.x, pt.y) || document.body;
+        elAtPoint.dispatchEvent(new PointerEvent('pointermove', props));
+        elAtPoint.dispatchEvent(new MouseEvent('mousemove', props));
+      } catch (e) {}
+      vMouse.x = pt.x; vMouse.y = pt.y;
+      await sleep(10 + Math.random() * 15 + (i === steps ? 30 : 0));
     }
+    
+    const finalProps = createPointerProps(targetX, targetY);
+    try {
+      targetEl.dispatchEvent(new PointerEvent('pointerover', finalProps));
+      targetEl.dispatchEvent(new PointerEvent('pointerenter', finalProps));
+      targetEl.dispatchEvent(new MouseEvent('mouseover', finalProps));
+      targetEl.dispatchEvent(new MouseEvent('mouseenter', finalProps));
+    } catch(e) {}
   }
 
   // --- 批量拖拽模拟 ---
@@ -976,50 +1013,44 @@
         selection.addRange(range);
       }
 
-      // 2. 模拟真实用户的剪贴板粘贴事件（许多富文本编辑器如 Lexical/Slate 会监听这个接管内容）
+      // 2. 补发真实键盘粘贴组合键序列 (Ctrl/Cmd + V)
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const modKey = isMac ? 'Meta' : 'Control';
+      const modCode = isMac ? 'MetaLeft' : 'ControlLeft';
+      
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: modKey, code: modCode, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true }));
+      await sleep(10 + Math.random() * 20);
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true }));
+      
+      // 3. 触发真实系统的剪贴板粘贴行为
       const pasteEvent = new ClipboardEvent('paste', {
         bubbles: true, cancelable: true, clipboardData: new DataTransfer()
       });
       pasteEvent.clipboardData.setData('text/plain', text);
       const pasteAccepted = !element.dispatchEvent(pasteEvent);
 
-      // 3. 原生命令注入：如果组件没有 preventDefault 拦截粘贴，或者是原生 Textarea
+      // 4. 原生命令注入：如果组件没有 preventDefault 拦截，或者它是原生输入框
       if (!pasteAccepted || isTextarea) {
         document.execCommand('insertText', false, text);
       }
 
-      // 4. 暴力属性覆盖兜底 + 高级 InputEvent 唤醒 React/Vue
+      // 5. 使用高级 InputEvent 唤醒 React/Vue，完全放弃对 _valueTracker 的粗暴修改
+      element.dispatchEvent(new InputEvent('input', { 
+        bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
+      }));
       if (isTextarea) {
-        const prototype = element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
-        if (descriptor && descriptor.set) {
-          descriptor.set.call(element, text);
-        } else {
-          element.value = text;
-        }
-        if (element._valueTracker) {
-          element._valueTracker.setValue('');
-        }
-        
-        // 关键修复：使用 InputEvent 而非普通 Event，模拟真实输入类型为粘贴
-        element.dispatchEvent(new InputEvent('input', { 
-          bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
-        }));
         element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-      } else if (element.isContentEditable) {
-        // 关键优化：为了兼容并保护 Lexical / Slate 等富文本的 DOM 节点树，绝对不要强行覆写 textContent，这会破坏 React 组件状态。
-        // 前面的 ClipboardEvent("paste") 或 execCommand 已把内容安全填入，此处直接派发 InputEvent 强制同步数据状态即可。
-        element.dispatchEvent(new InputEvent('input', { 
-          bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text 
-        }));
       }
+
+      // 键盘序列释放
+      await sleep(10 + Math.random() * 20);
+      element.dispatchEvent(new KeyboardEvent('keyup', { key: 'v', code: 'KeyV', ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true }));
+      await sleep(5 + Math.random() * 10);
+      element.dispatchEvent(new KeyboardEvent('keyup', { key: modKey, code: modCode, ctrlKey: false, metaKey: false, bubbles: true, cancelable: true }));
       
-      log('Text injected and React/Vue forced sync done.');
+      log('Text injected using pure Ctrl+V event sequence.');
     } catch (err) {
-      log('Text injection failed, fallback activated:', err.message);
-      if (isTextarea) element.value = text;
-      else element.textContent = text;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
+      log('Text injection sequence failed:', err.message);
     }
 
     await sleep(50);
@@ -1046,40 +1077,8 @@
     await sleep(40 + Math.random() * 60);
     inputBox.dispatchEvent(new KeyboardEvent('keyup', keyProps));
 
-    // 增加按钮点击兜底，因为豆包前端框架可能会拦截虚拟键盘事件
-    await sleep(300);
-    const sendBtn = findSendButton(inputBox);
-    if (sendBtn && !sendBtn.disabled) {
-      log('Fallback: found active send button, clicking it just in case...');
-      sendBtn.click();
-    }
-
-    log('Send sequence completed.');
-  }
-
-  function findSendButton(inputBox) {
-    // 从输入框的祖先容器中寻找发送按钮
-    const form = inputBox.closest('form');
-    if (form) {
-      for (const sel of DOM_SELECTORS.sendButton) {
-        const btn = form.querySelector(sel);
-        if (btn) return btn;
-      }
-    }
-
-    const wrapper = inputBox.closest(
-      '[class*="input"], [class*="composer"], [class*="chat-input"], footer'
-    );
-    if (wrapper) {
-      const btn = wrapper.querySelector('button');
-      if (btn) return btn;
-    }
-
-    for (const sel of DOM_SELECTORS.sendButton) {
-      const btn = document.querySelector(sel);
-      if (btn) return btn;
-    }
-    return null;
+    // 遵从指令：完全使用纯回车键序列，放弃高危的按钮点击兜底
+    log('Send sequence completed (Enter key only).');
   }
 
   // ============================================================
@@ -1635,9 +1634,6 @@
           if (el.naturalWidth < 100 || el.naturalHeight < 100) continue;
         }
 
-        processedImages.add(url);
-        log(`Found AI-generated ${isVideo ? 'video' : 'image'}! Trying URL push first...`);
-
         const container = el.closest('[class*="message"], [class*="bubble"], .flex') || el.parentElement;
         
         let activeTaskId = mediaTaskMap.get(el);
@@ -1663,6 +1659,17 @@
           activeTaskId = lastDispatchedTaskId;
           log(`[Agent] Fallback to lastDispatchedTaskId: ${activeTaskId}`);
         }
+
+        // 【新增极强防御】：基于 TaskID 的防重判定。解决视频从 Blob 变为 CDN 导致的重复下载
+        if (activeTaskId && localStorage.getItem('doubao_downloaded_task_' + activeTaskId)) {
+          log(`[Physical Media] Task ${activeTaskId} already triggered download. Skipping media processing.`);
+          processedImages.add(url);
+          if (stableUrl) markMediaAsCompleted(url);
+          continue;
+        }
+
+        processedImages.add(url);
+        log(`Found AI-generated ${isVideo ? 'video' : 'image'}! Trying URL push first...`);
 
         if (activeTaskId) {
           mediaTaskMap.set(el, activeTaskId);
@@ -1690,17 +1697,17 @@
         const clientX = rect.left + rect.width / 2;
         const clientY = rect.top + rect.height / 2;
 
-        log(`[Physical Media] Stealth hovering media card...`);
-        dispatchStealthHoverEvents(itemContainer, clientX, clientY);
+        log(`[Physical Media] Gliding mouse to media card with Bezier path...`);
+        await glideMouseTo(itemContainer, clientX, clientY);
         
         const innerImg = itemContainer.querySelector('img');
         if (innerImg) {
-          dispatchStealthHoverEvents(innerImg, clientX, clientY);
+          await glideMouseTo(innerImg, clientX, clientY);
         }
 
         const playerWrapper = itemContainer.querySelector('[class*="player-wrapper"]') || itemContainer.querySelector('[class*="player"]');
         if (playerWrapper) {
-          dispatchStealthHoverEvents(playerWrapper, clientX, clientY);
+          await glideMouseTo(playerWrapper, clientX, clientY);
         }
 
         // 3. 轮询等待操作工具栏渲染就绪 (最长等待 2.0s)
@@ -1752,13 +1759,20 @@
             const label = (btn.getAttribute('aria-label') || '').trim();
             const title = (btn.getAttribute('title') || '').trim();
             const cls = btn.className || '';
+            const allText = text + label + title;
+
+            // 【核心修复】：绝对排除所有下载“文本/文档”或执行“复制/反馈”的干扰按钮！
+            if (allText.includes('文档') || allText.includes('文本') || 
+                allText.includes('复制') || allText.includes('重新生成') || 
+                allText.includes('踩') || allText.includes('赞')) {
+              continue;
+            }
 
             if (
               text.includes('下载') || 
               label.includes('下载') || 
               title.includes('下载') || 
-              cls.includes('download') ||
-              cls.includes('action-button')
+              cls.includes('download')
             ) {
               downloadBtn = btn;
               log('[Physical Media] Locked download button via fuzzy fallback');
@@ -1767,8 +1781,12 @@
           }
 
           if (!downloadBtn) {
-            // 终极降级
-            const vBtns = itemContainer.querySelectorAll('[class*="action-button"], button[aria-label*="下载"], button[title*="下载"], [class*="download"]');
+            // 终极降级（同样排除文本下载）
+            const vBtns = Array.from(itemContainer.querySelectorAll('button[aria-label*="下载"], button[title*="下载"], [class*="download"]'))
+              .filter(btn => {
+                const t = (btn.textContent || '') + (btn.getAttribute('aria-label') || '') + (btn.getAttribute('title') || '');
+                return !t.includes('文档') && !t.includes('文本');
+              });
             if (vBtns.length > 0) {
               downloadBtn = vBtns[vBtns.length - 1];
               log('[Physical Media] Locked download button via last-resort fallback');
@@ -1784,7 +1802,7 @@
             if (activeTaskId) {
               GM_xmlhttpRequest({
                 method: 'POST',
-                url: CONFIG.pushUrl.replace('/push', '/download-alert'),
+                url: CONFIG.pushUrl,
                 headers: { 'Content-Type': 'application/json' },
                 data: JSON.stringify({ taskId: activeTaskId, action: 'download-alert' }),
                 onload: () => log(`[Alert] Watchdog notified for Task ${activeTaskId} right before download`)
@@ -1793,7 +1811,10 @@
 
             // 【彻底防史前重下】：一旦触发原生下载，永久记录此媒体到 localStorage
             markMediaAsCompleted(url);
-            log(`[Physical Media] Marked stable URL as COMPLETED to prevent future scrolling re-downloads.`);
+            if (activeTaskId) {
+              localStorage.setItem('doubao_downloaded_task_' + activeTaskId, 'true');
+            }
+            log(`[Physical Media] Marked stable URL & TaskID as COMPLETED to prevent future scrolling re-downloads.`);
 
             processedImages.add(url);
             downloadBtn.click(); // 触发豆包原生下载 -> 后端 Watchdog 接收

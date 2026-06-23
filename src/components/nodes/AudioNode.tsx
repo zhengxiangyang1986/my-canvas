@@ -246,7 +246,12 @@ const AudioNode = ({ id, data, selected }: NodeProps) => {
       return;
     }
     taskCompletionSound.primeAudio();
-    update({ status: 'submitting', error: null, tracks: [], audioUrl: undefined });
+    update({
+      status: 'submitting',
+      error: null,
+      taskId: null,
+      clipIds: [],
+    });
     try {
       // cover/extend: 如预传 clipId 为空但上游有 audioUrl, 则自动上传
       let clipIdForRef = uploadedClipId;

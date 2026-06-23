@@ -158,6 +158,8 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
         const arr7 = Array.isArray(ud.texts) ? ud.texts.join('\u241F') : '';
         const arrModel1 = Array.isArray(ud.modelUrls) ? ud.modelUrls.join(',') : '';
         const arrModel2 = Array.isArray(ud.directModelUrls) ? ud.directModelUrls.join(',') : '';
+        const arrVid = Array.isArray(ud.videoUrls) ? ud.videoUrls.join(',') : '';
+        const arrAud = Array.isArray(ud.audioUrls) ? ud.audioUrls.join(',') : '';
         const arr8 = Array.isArray(ud.materialSetItems)
           ? JSON.stringify(ud.materialSetItems.map((item: any) => [item?.kind, item?.url, item?.text, item?.name]))
           : '';
@@ -187,6 +189,8 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
           arr7,
           arrModel1,
           arrModel2,
+          arrVid,
+          arrAud,
           arr8,
         ].join('§');
       })
@@ -348,8 +352,18 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
         if (Array.isArray(ud.modelUrls)) ud.modelUrls.forEach((u: any) => pushUnique(out.models, u));
         if (Array.isArray(ud.directModelUrls)) ud.directModelUrls.forEach((u: any) => pushUnique(out.models, u));
 
-      // 视频
-        pushUnique(out.videos, ud.videoUrl);
+      // 视频 - 单
+        const singleRemoteVideo = typeof ud.remoteVideoUrl === 'string'
+          ? ud.remoteVideoUrl
+          : (Array.isArray(ud.remoteVideoUrls) ? ud.remoteVideoUrls[0] : undefined);
+        pushUniqueWithRemote(out.videos, ud.videoUrl, singleRemoteVideo);
+        // 视频 - 多
+        if (Array.isArray(ud.videoUrls)) {
+          ud.videoUrls.forEach((u: any, idx: number) => {
+            const r = Array.isArray(ud.remoteVideoUrls) ? ud.remoteVideoUrls[idx] : undefined;
+            pushUniqueWithRemote(out.videos, u, r);
+          });
+        }
 
       // === v1.2.9.14: Suno 双端口语义 (与 FramePair 同模式) ===
       // AudioNode (Suno) 同时具备 audioUrl + audioUrl_1 字段时按 sourceHandle 过滤,
@@ -366,9 +380,19 @@ const OutputNode = ({ id, data, selected }: NodeProps) => {
           continue;
         }
 
-        // 音频 (audioUrl 主轨, audioUrl_1 副轨——AudioNode/SunoNode 双输出口)
-        pushUnique(out.audios, ud.audioUrl);
-        pushUnique(out.audios, ud.audioUrl_1);
+        // 音频 - 单/双轨
+        const singleRemoteAudio = typeof ud.remoteAudioUrl === 'string'
+          ? ud.remoteAudioUrl
+          : (Array.isArray(ud.remoteAudioUrls) ? ud.remoteAudioUrls[0] : undefined);
+        pushUniqueWithRemote(out.audios, ud.audioUrl, singleRemoteAudio);
+        pushUniqueWithRemote(out.audios, ud.audioUrl_1, undefined);
+        // 音频 - 多
+        if (Array.isArray(ud.audioUrls)) {
+          ud.audioUrls.forEach((u: any, idx: number) => {
+            const r = Array.isArray(ud.remoteAudioUrls) ? ud.remoteAudioUrls[idx] : undefined;
+            pushUniqueWithRemote(out.audios, u, r);
+          });
+        }
       }
     }
 

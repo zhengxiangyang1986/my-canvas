@@ -154,9 +154,8 @@ router.post('/push', (req, res) => {
     const { taskId, status, progress, base64Data, error, text, action } = req.body;
 
     if (action === 'download-alert') {
-      // 兼容旧版：转发给下方的 download-alert 处理函数
-      // 但是新版脚本已经直接发往 /download-alert 了
-      res.json({ success: true, warning: 'Please use /download-alert endpoint directly' });
+      triggerWatchdog(taskId);
+      res.json({ success: true });
       return;
     }
 
@@ -230,49 +229,52 @@ router.get('/inbox/:taskId', (req, res) => {
 const claimPool = new Map();
 const unclaimedFiles = new Map();
 
+function triggerWatchdog(taskId) {
+  console.log(`[Tampermonkey] 收到大图下载预警，启动看门狗锁定 taskId: ${taskId}`);
+
+  const now = Date.now();
+  let matchedFile = null;
+  const taskRecord = results.get(taskId);
+  const isTaskVideo = taskRecord?.payload?.model === 'video';
+  for (const [filePath, timestamp] of unclaimedFiles.entries()) {
+    if (now - timestamp <= 30 * 1000) {
+      const ext = path.extname(filePath).toLowerCase();
+      const isVideoFile = ['.mp4', '.webm'].includes(ext);
+      if ((isTaskVideo && isVideoFile) || (!isTaskVideo && !isVideoFile)) {
+        matchedFile = filePath;
+        break;
+      }
+    } else {
+      unclaimedFiles.delete(filePath);
+    }
+  }
+
+  if (matchedFile) {
+    console.log(`[Watchdog] 迟滞匹配成功！为任务 ${taskId} 打捞到早前落盘的大图: ${path.basename(matchedFile)}`);
+    processDownloadedFile(matchedFile, taskId);
+    unclaimedFiles.delete(matchedFile);
+  } else {
+    const exts = isTaskVideo ? ['.mp4', '.webm'] : ['.png', '.jpg', '.jpeg', '.webp'];
+    const scanResult = scanDownloadsForRecentMedia(watchPaths, exts, 30 * 1000);
+    if (scanResult) {
+      console.log(`[Watchdog] 主动扫描兜底成功！为任务 ${taskId} 找到大图: ${path.basename(scanResult)}`);
+      processDownloadedFile(scanResult, taskId);
+    } else {
+      claimPool.set(taskId, now);
+      console.log(`[Watchdog] 暂未发现匹配文件，taskId ${taskId} 已进入待认领池.`);
+    }
+  }
+
+  for (const [key, timestamp] of claimPool.entries()) {
+    if (now - timestamp > 10 * 60 * 1000) claimPool.delete(key);
+  }
+}
+
 router.post('/download-alert', (req, res) => {
   try {
     const { taskId } = req.body;
     if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
-
-    console.log(`[Tampermonkey] 收到大图下载预警，启动看门狗锁定 taskId: ${taskId}`);
-
-    const now = Date.now();
-    let matchedFile = null;
-    const taskRecord = results.get(taskId);
-    const isTaskVideo = taskRecord?.payload?.model === 'video';
-    for (const [filePath, timestamp] of unclaimedFiles.entries()) {
-      if (now - timestamp <= 30 * 1000) {
-        const ext = path.extname(filePath).toLowerCase();
-        const isVideoFile = ['.mp4', '.webm'].includes(ext);
-        if ((isTaskVideo && isVideoFile) || (!isTaskVideo && !isVideoFile)) {
-          matchedFile = filePath;
-          break;
-        }
-      } else {
-        unclaimedFiles.delete(filePath);
-      }
-    }
-
-    if (matchedFile) {
-      console.log(`[Watchdog] 迟滞匹配成功！为任务 ${taskId} 打捞到早前落盘的大图: ${path.basename(matchedFile)}`);
-      processDownloadedFile(matchedFile, taskId);
-      unclaimedFiles.delete(matchedFile);
-    } else {
-      const exts = isTaskVideo ? ['.mp4', '.webm'] : ['.png', '.jpg', '.jpeg', '.webp'];
-      const scanResult = scanDownloadsForRecentMedia(downloadsPath, exts, 30 * 1000);
-      if (scanResult) {
-        console.log(`[Watchdog] 主动扫描兜底成功！为任务 ${taskId} 找到大图: ${path.basename(scanResult)}`);
-        processDownloadedFile(scanResult, taskId);
-      } else {
-        claimPool.set(taskId, now);
-        console.log(`[Watchdog] 暂未发现匹配文件，taskId ${taskId} 已进入待认领�?`);
-      }
-    }
-
-    for (const [key, timestamp] of claimPool.entries()) {
-      if (now - timestamp > 10 * 60 * 1000) claimPool.delete(key);
-    }
+    triggerWatchdog(taskId);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -292,28 +294,41 @@ function getRealDownloadsPath() {
   return defaultPath;
 }
 
-const downloadsPath = config.OUTPUT_DIR;
-console.log(`[Watchdog] 启动看门狗，全天候监�? ${downloadsPath}`);
+const realDownloadsPath = getRealDownloadsPath();
+const outputDirPath = config.OUTPUT_DIR;
+// 看门狗必须同时监控两个目录：
+// 1. OUTPUT_DIR —— 后端 push-url/push-media 主动下载的缩略图落盘目录
+// 2. 浏览器真实 Downloads —— downloadBtn.click() 原生下载的大图落盘目录
+const watchPaths = [outputDirPath];
+if (realDownloadsPath !== outputDirPath && fs.existsSync(realDownloadsPath)) {
+  watchPaths.push(realDownloadsPath);
+}
+console.log(`[Watchdog] 启动看门狗，全天候监控: ${watchPaths.join(' + ')}`);
 
 const processedScanFiles = new Set();
-function scanDownloadsForRecentMedia(dirPath, exts, withinMs) {
+function scanDownloadsForRecentMedia(dirPaths, exts, withinMs) {
+  // 支持同时扫描多个目录（output + Downloads）
+  const dirs = Array.isArray(dirPaths) ? dirPaths : [dirPaths];
   try {
     const now = Date.now();
-    const files = fs.readdirSync(dirPath);
     let bestMatch = null;
     let bestTime = 0;
-    for (const file of files) {
-      const ext = path.extname(file).toLowerCase();
-      if (!exts.includes(ext)) continue;
-      const fullPath = path.join(dirPath, file);
-      if (processedScanFiles.has(fullPath)) continue;
-      try {
-        const mtime = fs.statSync(fullPath).mtimeMs;
-        if (now - mtime <= withinMs && mtime > bestTime) {
-          bestMatch = fullPath;
-          bestTime = mtime;
-        }
-      } catch (e) { }
+    for (const dirPath of dirs) {
+      if (!fs.existsSync(dirPath)) continue;
+      const files = fs.readdirSync(dirPath);
+      for (const file of files) {
+        const ext = path.extname(file).toLowerCase();
+        if (!exts.includes(ext)) continue;
+        const fullPath = path.join(dirPath, file);
+        if (processedScanFiles.has(fullPath)) continue;
+        try {
+          const mtime = fs.statSync(fullPath).mtimeMs;
+          if (now - mtime <= withinMs && mtime > bestTime) {
+            bestMatch = fullPath;
+            bestTime = mtime;
+          }
+        } catch (e) { }
+      }
     }
     if (bestMatch) {
       processedScanFiles.add(bestMatch);
@@ -368,21 +383,31 @@ async function processDownloadedFile(filePath, taskId) {
   }
 }
 
-const watcher = chokidar.watch(downloadsPath, {
+const watcher = chokidar.watch(watchPaths, {
   ignored: /(^|[\/\\])\../, persistent: true, ignoreInitial: true,
-  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 }
+  awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 200 }
 });
 
-watcher.on('add', (filePath) => {
-  const filename = path.basename(filePath);
-  if (filename.startsWith('bridge_')) {
-    // 过滤掉看门狗自己生成或后端推送的文件，防止死循环
-    return;
-  }
+watcher.on('ready', () => {
+  console.log('[Watchdog] chokidar ready, watching: ' + watchPaths.join(' + '));
+});
 
+// 诊断日志：记录所有文件事件，排查 chokidar 是否收到浏览器下载
+watcher.on('all', (event, filePath) => {
   const ext = path.extname(filePath).toLowerCase();
-  if (['.png', '.jpg', '.jpeg', '.mp4', '.webm', '.webp'].includes(ext)) {
-    const isVideoFile = ['.mp4', '.webm'].includes(ext);
+  if (['.png','.jpg','.jpeg','.mp4','.webm','.webp','.crdownload','.tmp'].includes(ext) || claimPool.size > 0) {
+    console.log('[Watchdog:FS] ' + event + ' -> ' + path.basename(filePath) + ' (claimPool: ' + claimPool.size + ')');
+  }
+});
+
+// 核心匹配逻辑：add 和 change 共用
+function handleFileDetected(filePath, eventType) {
+  const filename = path.basename(filePath);
+  if (filename.startsWith('bridge_')) return;
+  const ext = path.extname(filePath).toLowerCase();
+  if (['.png','.jpg','.jpeg','.mp4','.webm','.webp'].includes(ext)) {
+    console.log('[Watchdog] media ' + eventType + ': ' + filename + ' (claimPool=' + claimPool.size + ')');
+    const isVideoFile = ['.mp4','.webm'].includes(ext);
     if (claimPool.size > 0) {
       const entries = Array.from(claimPool.entries());
       entries.sort((a, b) => b[1] - a[1]);
@@ -390,23 +415,25 @@ watcher.on('add', (filePath) => {
       for (const [taskId, _] of entries) {
         const taskRecord = results.get(taskId);
         const isTaskVideo = taskRecord?.payload?.model === 'video';
-        if ((isVideoFile && isTaskVideo) || (!isVideoFile && !isTaskVideo)) {
-          matchedTaskId = taskId;
-          break;
-        }
+        if ((isVideoFile && isTaskVideo) || (!isVideoFile && !isTaskVideo)) { matchedTaskId = taskId; break; }
       }
       if (matchedTaskId) {
+        console.log('[Watchdog] MATCHED! ' + filename + ' => ' + matchedTaskId);
         processDownloadedFile(filePath, matchedTaskId);
       } else {
-        console.log(`[Watchdog] 类型不匹配，暂无匹配任务: ${path.basename(filePath)}，加入迟滞匹配池.`);
+        console.log('[Watchdog] type mismatch, no matching task: ' + filename);
         unclaimedFiles.set(filePath, Date.now());
       }
     } else {
-      console.log(`[Watchdog] 发现文件落盘但无预警: ${path.basename(filePath)}，加入迟滞匹配池.`);
+      console.log('[Watchdog] file detected but no alert pending: ' + filename);
       unclaimedFiles.set(filePath, Date.now());
     }
   }
-});
+}
+
+watcher.on('add', (filePath) => handleFileDetected(filePath, 'add'));
+// 兜底：浏览器覆盖已有文件时 chokidar 触发 change 而非 add
+watcher.on('change', (filePath) => handleFileDetected(filePath, 'change'));
 
 async function renameFileWithRetry(src, dest, maxRetries = 10, delayMs = 500) {
   for (let i = 0; i < maxRetries; i++) {

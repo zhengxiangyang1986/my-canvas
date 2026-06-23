@@ -1059,8 +1059,8 @@ function removeDuplicateSendBridgeNodes(
     const nodeSourceCanvasId = typeof data.sendBridgeSourceCanvasId === 'string' ? data.sendBridgeSourceCanvasId : '';
     const nodeSourceIds: string[] = Array.isArray(data.sendBridgeSourceNodeIds)
       ? data.sendBridgeSourceNodeIds.filter(
-          (value: unknown): value is string => typeof value === 'string' && Boolean(value.trim()),
-        )
+        (value: unknown): value is string => typeof value === 'string' && Boolean(value.trim()),
+      )
       : [];
     const sharesSourceNode =
       currentSourceNodeIds.size > 0 &&
@@ -1540,30 +1540,30 @@ function PlacementShelf({
   const displayLimit = Math.min(items.length, open ? 20 : 5);
   const shellStyle: CSSProperties = isPixel
     ? {
-        border: '2px solid var(--px-ink, #1A1410)',
-        background: 'var(--px-surface, #fff7c2)',
-        color: 'var(--px-ink, #1A1410)',
-        boxShadow: '4px 4px 0 var(--px-ink, #1A1410)',
-        borderRadius: 12,
-      }
+      border: '2px solid var(--px-ink, #1A1410)',
+      background: 'var(--px-surface, #fff7c2)',
+      color: 'var(--px-ink, #1A1410)',
+      boxShadow: '4px 4px 0 var(--px-ink, #1A1410)',
+      borderRadius: 12,
+    }
     : {
-        border: `1px solid ${isDark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.12)'}`,
-        background: isDark ? 'rgba(17,24,39,.92)' : 'rgba(255,255,255,.94)',
-        color: isDark ? '#f8fafc' : '#111827',
-        boxShadow: '0 18px 48px rgba(0,0,0,.28)',
-        borderRadius: 14,
-        backdropFilter: 'blur(12px)',
-      };
+      border: `1px solid ${isDark ? 'rgba(255,255,255,.16)' : 'rgba(0,0,0,.12)'}`,
+      background: isDark ? 'rgba(17,24,39,.92)' : 'rgba(255,255,255,.94)',
+      color: isDark ? '#f8fafc' : '#111827',
+      boxShadow: '0 18px 48px rgba(0,0,0,.28)',
+      borderRadius: 14,
+      backdropFilter: 'blur(12px)',
+    };
   const itemStyle: CSSProperties = isPixel
     ? {
-        border: '1.5px solid var(--px-ink, #1A1410)',
-        background: 'var(--px-card, #fffdf1)',
-        boxShadow: '1px 1px 0 var(--px-ink, #1A1410)',
-      }
+      border: '1.5px solid var(--px-ink, #1A1410)',
+      background: 'var(--px-card, #fffdf1)',
+      boxShadow: '1px 1px 0 var(--px-ink, #1A1410)',
+    }
     : {
-        border: `1px solid ${isDark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.10)'}`,
-        background: isDark ? 'rgba(255,255,255,.06)' : 'rgba(15,23,42,.04)',
-      };
+      border: `1px solid ${isDark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.10)'}`,
+      background: isDark ? 'rgba(255,255,255,.06)' : 'rgba(15,23,42,.04)',
+    };
 
   return (
     <>
@@ -1930,11 +1930,11 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
       prev.map((candidate) => (
         candidate.id === item.nodeId
           ? {
-              ...candidate,
-              selected: true,
-              position: nextPosition,
-              data: { ...(candidate.data || {}), userMoved: true },
-            }
+            ...candidate,
+            selected: true,
+            position: nextPosition,
+            data: { ...(candidate.data || {}), userMoved: true },
+          }
           : { ...candidate, selected: false }
       )),
     );
@@ -2794,7 +2794,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
     return screenToFlowPosition(
       rect
         ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-      : { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+        : { x: window.innerWidth / 2, y: window.innerHeight / 2 },
     );
   }, [screenToFlowPosition, sendModal?.atScreen]);
 
@@ -2897,7 +2897,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
           nextNodeSerialId: freshSerials.nextNodeSerialId,
         };
         await api.saveCanvasData(targetCanvasId, payload);
-        api.autoSaveCanvasData(targetCanvasId, payload).catch(() => {});
+        api.autoSaveCanvasData(targetCanvasId, payload).catch(() => { });
         await loadCanvases();
         if (switchAfter) setActive(targetCanvasId);
         setSendModal(null);
@@ -2987,7 +2987,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
         nextNodeSerialId: freshSerials.nextNodeSerialId,
       };
       await api.saveCanvasData(targetCanvasId, payload);
-      api.autoSaveCanvasData(targetCanvasId, payload).catch(() => {});
+      api.autoSaveCanvasData(targetCanvasId, payload).catch(() => { });
       await loadCanvases();
       if (switchAfter) setActive(targetCanvasId);
       setSendModal(null);
@@ -3742,12 +3742,12 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
           prev.map((n) =>
             n.id === node.id
               ? {
-                  ...n,
-                  position: {
-                    x: tx + (snapDX ?? 0),
-                    y: ty + (snapDY ?? 0),
-                  },
-                }
+                ...n,
+                position: {
+                  x: tx + (snapDX ?? 0),
+                  y: ty + (snapDY ?? 0),
+                },
+              }
               : n
           )
         );
@@ -3846,7 +3846,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
         )
       );
     }
-  
+
     // 标记被用户手动拖动过的自动外挂 OutputNode (id 以 'output-auto-' 开头),
     // 后续「网格重排」useEffect 会检测 data.userMoved 跳过这些节点, 保留用户位置。
     // 多选拖动场景: xyflow 只传主拖 node, 本函数连同所有 selected 且带该前缀的节点都打上标记。
@@ -3867,7 +3867,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
           : n
       );
     });
-  
+
     groupDragRef.current = null;
   }, []);
 
@@ -4602,17 +4602,17 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
       const params: Connection =
         from.handleType === 'source'
           ? {
-              source: from.nodeId,
-              sourceHandle: null,
-              target: handle.nodeId,
-              targetHandle: handle.handleId,
-            }
+            source: from.nodeId,
+            sourceHandle: null,
+            target: handle.nodeId,
+            targetHandle: handle.handleId,
+          }
           : {
-              source: handle.nodeId,
-              sourceHandle: handle.handleId,
-              target: from.nodeId,
-              targetHandle: null,
-            };
+            source: handle.nodeId,
+            sourceHandle: handle.handleId,
+            target: from.nodeId,
+            targetHandle: null,
+          };
       connectingFromRef.current = null;
       onConnect(params);
       return true;
@@ -5745,7 +5745,7 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
     if (toRemoveNodeIds.size > 0 || toAddNodes.length > 0) {
       if (toAddNodes.length > 0) {
         console.warn('[autoOutput] 创建', toAddNodes.length, '个节点, pending累积:', pendingPlacedNodes.length,
-        '\n  positions:', toAddNodes.map(n => `${n.id.slice(0,20)}.. (${Math.round(n.position.x)},${Math.round(n.position.y)})`));
+          '\n  positions:', toAddNodes.map(n => `${n.id.slice(0, 20)}.. (${Math.round(n.position.x)},${Math.round(n.position.y)})`));
       }
       const baseNodes = nodes.filter((node) => !toRemoveNodeIds.has(node.id));
       const assignedToAdd = assignActiveNodeSerials(toAddNodes, baseNodes);
@@ -6458,32 +6458,32 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
               ? themeTokens.panelBg
               : isNaruto
                 ? themeTokens.panelBg
-              : isEva
-                ? themeTokens.panelBg
-              : isYyh
-                ? themeTokens.panelBg
-              : isSlamdunk
-                ? themeTokens.panelBg
-              : isSoccer
-                ? themeTokens.panelBg
-              : isDragonBall
-                ? themeTokens.panelBg
-              : isDark ? 'rgba(20,20,22,.9)' : 'rgba(255,255,255,.9)',
+                : isEva
+                  ? themeTokens.panelBg
+                  : isYyh
+                    ? themeTokens.panelBg
+                    : isSlamdunk
+                      ? themeTokens.panelBg
+                      : isSoccer
+                        ? themeTokens.panelBg
+                        : isDragonBall
+                          ? themeTokens.panelBg
+                          : isDark ? 'rgba(20,20,22,.9)' : 'rgba(255,255,255,.9)',
             border: isOp
               ? `4px double ${themeTokens.textMain}`
               : isNaruto
                 ? `3px solid ${themeTokens.textMain}`
-              : isEva
+                : isEva
                   ? `2px solid ${themeTokens.borderStrong}`
-              : isYyh
-                  ? `2px solid ${themeTokens.accent}`
-              : isSlamdunk
-                  ? `3px solid ${themeTokens.textMain}`
-              : isSoccer
-                  ? `3px solid ${themeTokens.textMain}`
-              : isDragonBall
-                  ? `3px solid ${themeTokens.warning}`
-                : `1px solid ${isDark ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.08)'}`,
+                  : isYyh
+                    ? `2px solid ${themeTokens.accent}`
+                    : isSlamdunk
+                      ? `3px solid ${themeTokens.textMain}`
+                      : isSoccer
+                        ? `3px solid ${themeTokens.textMain}`
+                        : isDragonBall
+                          ? `3px solid ${themeTokens.warning}`
+                          : `1px solid ${isDark ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.08)'}`,
             borderRadius: isOp ? 999 : isNaruto ? '18px 18px 12px 12px' : isEva ? 8 : isYyh ? 12 : isSlamdunk ? 10 : isSoccer ? 12 : isDragonBall ? 999 : 8,
             right: isOp ? 24 : isNaruto ? 24 : isEva ? 24 : isYyh ? 24 : isSlamdunk ? 24 : isSoccer ? 24 : isDragonBall ? 28 : undefined,
             bottom: isOp ? 42 : isNaruto ? 40 : isEva ? 24 : isYyh ? 28 : isSlamdunk ? 32 : isSoccer ? 32 : isDragonBall ? 34 : undefined,
@@ -6491,17 +6491,17 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
               ? `0 0 0 7px ${themeTokens.warning}, 5px 5px 0 ${themeTokens.textMain}`
               : isNaruto
                 ? themeTokens.shadowPanel
-              : isEva
+                : isEva
                   ? `0 0 0 4px ${themeTokens.panelBgElevated}, 0 0 0 6px ${themeTokens.borderStrong}, 0 18px 46px rgba(0,0,0,.5), inset 0 0 34px ${themeTokens.accent}22`
-              : isYyh
-                  ? `0 0 0 4px ${themeTokens.panelBgElevated}, 0 0 0 6px ${themeTokens.borderStrong}, 0 18px 46px rgba(0,0,0,.46), inset 0 0 34px ${themeTokens.secondary}22`
-              : isSlamdunk
-                  ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.28)`
-              : isSoccer
-                  ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.24)`
-              : isDragonBall
-                  ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.28), inset 0 0 34px ${themeTokens.warning}33`
-              : undefined,
+                  : isYyh
+                    ? `0 0 0 4px ${themeTokens.panelBgElevated}, 0 0 0 6px ${themeTokens.borderStrong}, 0 18px 46px rgba(0,0,0,.46), inset 0 0 34px ${themeTokens.secondary}22`
+                    : isSlamdunk
+                      ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.28)`
+                      : isSoccer
+                        ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.24)`
+                        : isDragonBall
+                          ? `0 0 0 5px ${themeTokens.secondary}, 5px 5px 0 ${themeTokens.textMain}, 0 18px 46px rgba(0,0,0,.28), inset 0 0 34px ${themeTokens.warning}33`
+                          : undefined,
             cursor: 'pointer',
             overflow: isOp || isNaruto || isEva || isYyh || isSlamdunk || isSoccer || isDragonBall ? 'hidden' : undefined,
             display: (viewportMoving || nodeDragging) && heavyCanvasSurface ? 'none' : undefined,
