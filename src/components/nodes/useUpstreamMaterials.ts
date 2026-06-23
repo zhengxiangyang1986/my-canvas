@@ -287,13 +287,20 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
       }
 
       // 文本收集逻辑
-      if (typeof ud.outputText === 'string' && ud.outputText.trim()) {
-        // 如果存在用户手动编辑的 outputText，则作为该节点的唯一文本输出，完全替代/屏蔽其他所有自动生成的文本字段
+      // outputText 优先级说明:
+      //   - 若上游节点同时存在 textSegments/segments/texts 数组 (如 TextSplitNode), 说明 outputText 是机器
+      //     自动 join 的全文, 不是用户手动编辑, 必须走数组优先分支以保留分段结构。
+      //   - 若上游节点不存在分段数组 (如 LLMNode / OutputNode 的二次编辑), 才将 outputText 视为用户覆盖。
+      const textArrayFieldsCheck = ['textSegments', 'segments', 'texts'];
+      const hasTextArray = textArrayFieldsCheck.some((f) => Array.isArray(ud[f]) && ud[f].length > 0);
+      const hasUserOutputText = typeof ud.outputText === 'string' && ud.outputText.trim() && !hasTextArray;
+
+      if (hasUserOutputText) {
+        // 用户手动编辑的 outputText：作为该节点的唯一文本输出，完全替代/屏蔽其他自动字段
         pushText(sid, ud.outputText, `text-field:${sid}:outputText`, undefined, textMeta);
       } else {
-        // 否则，按原有优先级收集自动生成的文本字段
-        const textArrayFields = ['textSegments', 'segments', 'texts'];
-        const textArrayField = textArrayFields.find((f) => Array.isArray(ud[f]) && ud[f].length > 0);
+        // 按原有优先级收集: 分段数组 > reply > promptResolved > prompt > text
+        const textArrayField = textArrayFieldsCheck.find((f) => Array.isArray(ud[f]) && ud[f].length > 0);
         if (textArrayField) {
           ud[textArrayField].forEach((item: any, index: number) => {
             pushText(sid, item, `text-array:${sid}:${textArrayField}:${index}`, undefined, textMeta);
