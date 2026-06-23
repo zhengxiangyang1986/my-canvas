@@ -286,27 +286,32 @@ export function useUpstreamMaterials(nodeId: string): UpstreamMaterials {
         continue;
       }
 
-      // 文本: textSegments/texts 数组优先, 避免文本分割节点再把 joined prompt 当成第 N+1 项
-      const textArrayFields = ['textSegments', 'segments', 'texts'];
-      const textArrayField = textArrayFields.find((f) => Array.isArray(ud[f]) && ud[f].length > 0);
-      if (textArrayField) {
-        ud[textArrayField].forEach((item: any, index: number) => {
-          pushText(sid, item, `text-array:${sid}:${textArrayField}:${index}`, undefined, textMeta);
-        });
-      } else {
-        // 文本: outputText (用户编辑覆盖) > reply > promptResolved(@素材已解析) > prompt > text
+      // 文本收集逻辑
+      if (typeof ud.outputText === 'string' && ud.outputText.trim()) {
+        // 如果存在用户手动编辑的 outputText，则作为该节点的唯一文本输出，完全替代/屏蔽其他所有自动生成的文本字段
         pushText(sid, ud.outputText, `text-field:${sid}:outputText`, undefined, textMeta);
-        pushText(sid, ud.reply, `text-field:${sid}:reply`, undefined, textMeta);
-        let primaryPromptText = '';
-        if (typeof ud.promptResolved === 'string' && ud.promptResolved.trim()) {
-          primaryPromptText = ud.promptResolved.trim();
-          pushText(sid, ud.promptResolved, `text-field:${sid}:promptResolved`, undefined, textMeta);
+      } else {
+        // 否则，按原有优先级收集自动生成的文本字段
+        const textArrayFields = ['textSegments', 'segments', 'texts'];
+        const textArrayField = textArrayFields.find((f) => Array.isArray(ud[f]) && ud[f].length > 0);
+        if (textArrayField) {
+          ud[textArrayField].forEach((item: any, index: number) => {
+            pushText(sid, item, `text-array:${sid}:${textArrayField}:${index}`, undefined, textMeta);
+          });
         } else {
-          primaryPromptText = typeof ud.prompt === 'string' ? ud.prompt.trim() : '';
-          pushText(sid, ud.prompt, `text-field:${sid}:prompt`, undefined, textMeta);
-        }
-        if (typeof ud.text === 'string' && ud.text.trim() !== primaryPromptText) {
-          pushText(sid, ud.text, `text-field:${sid}:text`, undefined, textMeta);
+          // 文本: reply > promptResolved(@素材已解析) > prompt > text
+          pushText(sid, ud.reply, `text-field:${sid}:reply`, undefined, textMeta);
+          let primaryPromptText = '';
+          if (typeof ud.promptResolved === 'string' && ud.promptResolved.trim()) {
+            primaryPromptText = ud.promptResolved.trim();
+            pushText(sid, ud.promptResolved, `text-field:${sid}:promptResolved`, undefined, textMeta);
+          } else {
+            primaryPromptText = typeof ud.prompt === 'string' ? ud.prompt.trim() : '';
+            pushText(sid, ud.prompt, `text-field:${sid}:prompt`, undefined, textMeta);
+          }
+          if (typeof ud.text === 'string' && ud.text.trim() !== primaryPromptText) {
+            pushText(sid, ud.text, `text-field:${sid}:text`, undefined, textMeta);
+          }
         }
       }
 

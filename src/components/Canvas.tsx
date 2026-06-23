@@ -5464,11 +5464,15 @@ function CanvasInner({ onAddNodeRef, onInsertWorkflowRef }: CanvasInnerProps) {
         seen.add(u);
         mods.push(u);
       };
-      pushTxt(d.outputText);
-      pushTxt(d.reply);
-      if (Array.isArray(d.textSegments)) d.textSegments.forEach(pushTxt);
-      if (Array.isArray(d.segments)) d.segments.forEach(pushTxt);
-      if (Array.isArray(d.texts)) d.texts.forEach(pushTxt);
+      // 文本: textSegments/texts 数组优先, 避免文本分割节点再把 joined prompt 当成第 N+1 项
+      const textArrayFields = ['textSegments', 'segments', 'texts'];
+      const textArrayField = textArrayFields.find((f) => Array.isArray(d[f]) && d[f].length > 0);
+      if (textArrayField) {
+        d[textArrayField].forEach(pushTxt);
+      } else {
+        pushTxt(d.outputText);
+        pushTxt(d.reply);
+      }
       pushImg(d.imageUrl);
       if (Array.isArray(d.imageUrls)) d.imageUrls.forEach(pushImg);
       // d.urls 是通用产物数组（RH/FAL 使用），可能同时含图/视频/音频/3D 模型。
